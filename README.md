@@ -360,6 +360,96 @@ LANGFUSE_HOST=https://langfuse.observe.ravenhelm.test:8443
 
 ---
 
+## Documentation & Wiki Workflow
+
+### 1. Author in the Repo First
+- **Architecture / strategy docs** live under `docs/` and are orchestrated via `docs/KNOWLEDGE_AND_PROCESS.md`.
+- **Runbooks** belong in `docs/runbooks/` (follow the RUNBOOK-### naming convention and include tags/frontmatter).
+- **Tables for the wiki** are generated in `docs/wiki/` (e.g., `Architecture_Index.md`, `Runbook_Catalog.md`). Update these whenever you change the source docs so we keep the SoT inside the repo.
+
+### 2. Push to the GitLab Wiki
+```bash
+# 1. Clone the wiki repo
+cd /Users/nwalker/Development
+git clone https://oauth2:<token>@gitlab.ravenhelm.test/ravenhelm/hlidskjalf.wiki.git hlidskjalf-wiki
+
+# 2. Copy rendered files from docs/wiki
+cp ./hlidskjalf/docs/wiki/*.md ./hlidskjalf-wiki/
+
+# 3. Commit & push
+cd hlidskjalf-wiki
+git config user.name  "Ravenhelm Platform Bot"
+git config user.email "bot@ravenhelm.test"
+git add .
+git commit -m "Sync wiki tables"
+git push origin main
+```
+
+Or automate it:
+
+```bash
+export GITLAB_TOKEN=glpat-...
+./scripts/sync_wiki.sh
+```
+
+### 3. Runbook Updates
+1. Add or edit the relevant `docs/runbooks/RUNBOOK-XXX-*.md` file.
+2. Reflect the change in `docs/wiki/Runbook_Catalog.md` (tags, prerequisites, TODOs).
+3. Open/close an issue on the Operations Board (see next section) so the update is tracked.
+
+---
+
+## Operations Board Workflow
+
+| Label | Meaning | When to use |
+|-------|---------|-------------|
+| `status::backlog` | Idea or request not yet prioritized | New work items, open questions |
+| `status::ready` | Groomed and ready for assignment | After acceptance criteria are defined |
+| `status::in-progress` | Actively being executed | Once you start the task (including wiki/runbook edits) |
+| `status::review` | Needs verification/PR review | After MR open but before merge |
+| `status::done` | Verified complete | When merged/deployed/documented |
+| `status::blocked` | Waiting on external dependency | Cert issues, missing approvals, upstream bugs |
+
+### Create/Update Issues
+```bash
+# Example: create an issue for a new runbook
+curl -s -X POST \
+  -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "title": "Runbook: Configure New Voice Agent",
+        "description": "Document the LiveKit + Deepgram steps...",
+        "labels": "wiki,status::backlog" }' \
+  https://gitlab.ravenhelm.test/api/v4/projects/2/issues
+```
+
+### Moving Cards
+Use the GitLab UI (`Issues → Boards → Operations Board`) or script it:
+```bash
+# Move issue IID 12 to in-progress
+curl -s -X PUT \
+  -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "add_labels": "status::in-progress",
+        "remove_labels": "status::ready" }' \
+  https://gitlab.ravenhelm.test/api/v4/projects/2/issues/12
+```
+
+Automation helper:
+
+```bash
+export GITLAB_TOKEN=glpat-...
+./scripts/ops_board.py list --labels wiki
+./scripts/ops_board.py create --title "Wiki: Add compliance section" --labels wiki status::backlog
+./scripts/ops_board.py move --iid 12 --add status::in-progress --remove status::ready
+```
+
+### Good Citizenship
+- Every documentation or operational change **must** have a corresponding issue.
+- Keep descriptions updated with links to PRs, runbooks, or wiki pages.
+- Close the issue (label `status::done`) only after wiki/runbook updates are merged and pushed.
+
+---
+
 ## Future: Production & SaaS Deployment
 
 ### The Target Architecture

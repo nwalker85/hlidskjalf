@@ -193,6 +193,7 @@ All human access goes through Zitadel SSO. All machine access uses OAuth 2.1.
 | Import ravenmaskos template | 🔴 | ⏳ |
 | Configure AWS credentials in Vault | 🔴 | ⏳ |
 | Test Terraform deployment | 🟡 | ⏳ |
+| Automate wiki + Operations Board workflows (`scripts/sync_wiki.sh`, `scripts/ops_board.py`) | 🟡 | ✅ |
 
 ### Phase 5: Advanced Features (WEEK 6+)
 **Goal:** Voice, chat, observability

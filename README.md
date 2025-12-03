@@ -111,6 +111,10 @@ A system with **both** is *cognitive*.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Identity & Access Reference
+- Zitadel SSO & OAuth runbook: [`docs/runbooks/RUNBOOK-006-zitadel-sso.md`](docs/runbooks/RUNBOOK-006-zitadel-sso.md)
+- GitLab permission sync architecture: [`docs/architecture/ZITADEL_GITLAB_PERMISSION_SYNC.md`](docs/architecture/ZITADEL_GITLAB_PERMISSION_SYNC.md)
+
 ---
 
 ## Quick Start

@@ -1,0 +1,58 @@
+# LiveKit Server Configuration
+# =============================
+# Shared voice infrastructure for Ravenhelm platform
+
+# Port configuration
+port: 7880
+rtc:
+  port_range_start: 7882
+  port_range_end: 7892
+  use_external_ip: false
+  # For local development
+  tcp_port: 7881
+
+# Logging
+logging:
+  level: info
+  json: true
+
+# API Keys (override via LIVEKIT_KEYS env var in production)
+keys:
+  devkey: secret
+
+# Room configuration
+room:
+  # Auto-create rooms when agents join
+  auto_create: true
+  # Max participants per room
+  max_participants: 100
+  # Empty room timeout (seconds)
+  empty_timeout: 300
+
+# TURN server (for NAT traversal)
+turn:
+  enabled: true
+  # Use built-in TURN
+  udp_port: 3478
+  # External IP (set in production)
+  # external_tls: true
+
+# Redis for multi-node (optional, single-node for dev)
+# redis:
+#   address: redis:6379
+
+# Webhook configuration (for agent events)
+webhook:
+  # URLs to notify on room/participant events
+  urls: []
+  # API key to include in webhook requests
+  api_key: ""
+
+# Egress (recording/streaming) - optional
+# egress:
+#   s3:
+#     access_key: ""
+#     secret: ""
+#     bucket: "livekit-recordings"
+#     region: "us-east-1"
+

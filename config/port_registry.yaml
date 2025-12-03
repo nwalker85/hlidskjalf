@@ -1,0 +1,317 @@
+version: 1.0.0
+ranges:
+  infrastructure:
+    start: 4000
+    end: 5999
+    description: Databases, message queues, core infrastructure
+  platform_api:
+    start: 8000
+    end: 8099
+    description: "Hli\xF0skj\xE1lf platform services"
+  personal_api:
+    start: 8100
+    end: 8199
+    description: Personal projects (nwalker85/)
+  work_api:
+    start: 8200
+    end: 8299
+    description: Work projects (Quant/)
+  sandbox_api:
+    start: 8300
+    end: 8399
+    description: Sandbox and testing
+  platform_ui:
+    start: 3000
+    end: 3099
+    description: Platform UIs
+  personal_ui:
+    start: 3100
+    end: 3199
+    description: Personal project UIs
+  work_ui:
+    start: 3200
+    end: 3299
+    description: Work project UIs
+  monitoring:
+    start: 9000
+    end: 9999
+    description: Prometheus, exporters, metrics
+reserved:
+- port: 5432
+  service: postgres
+  protocol: tcp
+  description: PostgreSQL (shared)
+- port: 6379
+  service: redis
+  protocol: tcp
+  description: Redis cache
+- port: 4222
+  service: nats
+  protocol: tcp
+  description: NATS JetStream (Huginn)
+- port: 9092
+  service: redpanda
+  protocol: tcp
+  description: Kafka protocol (Muninn)
+- port: 8081
+  service: redpanda-schema
+  protocol: tcp
+  description: Schema Registry
+- port: 9644
+  service: redpanda-admin
+  protocol: tcp
+  description: Redpanda Admin API
+- port: 4566
+  service: localstack
+  protocol: tcp
+  description: LocalStack unified endpoint
+- port: 8200
+  service: openbao
+  protocol: tcp
+  description: OpenBao (Vault fork)
+- port: 8081
+  service: spire-server
+  protocol: tcp
+  description: SPIRE Server API
+  note: Conflicts with redpanda-schema - use different binding
+- port: 3000
+  service: grafana
+  protocol: tcp
+  description: Grafana dashboards
+- port: 9090
+  service: prometheus
+  protocol: tcp
+  description: Prometheus metrics
+- port: 9093
+  service: alertmanager
+  protocol: tcp
+  description: Alertmanager
+- port: 3100
+  service: loki
+  protocol: tcp
+  description: Loki log aggregation
+- port: 3200
+  service: tempo
+  protocol: tcp
+  description: Tempo traces
+- port: 4317
+  service: otel-grpc
+  protocol: tcp
+  description: OTLP gRPC endpoint
+- port: 4318
+  service: otel-http
+  protocol: tcp
+  description: OTLP HTTP endpoint
+- port: 3001
+  service: langfuse
+  protocol: tcp
+  description: LangFuse LLM tracing
+- port: 6006
+  service: phoenix
+  protocol: tcp
+  description: Phoenix embeddings
+- port: 5678
+  service: n8n
+  protocol: tcp
+  description: n8n workflow automation
+- port: 8084
+  service: weaviate
+  protocol: tcp
+  description: Weaviate vector database
+- port: 8085
+  service: embeddings
+  protocol: tcp
+  description: Sentence Transformers (TEI)
+- port: 8086
+  service: reranker
+  protocol: tcp
+  description: Cross-encoder reranker (TEI)
+- port: 8087
+  service: docling
+  protocol: tcp
+  description: Docling document processing
+- port: 7687
+  service: memgraph-bolt
+  protocol: tcp
+  description: Memgraph Bolt protocol
+- port: 7444
+  service: memgraph-lab
+  protocol: tcp
+  description: Memgraph Lab API
+- port: 3010
+  service: memgraph-lab-ui
+  protocol: tcp
+  description: Memgraph Lab UI
+- port: 7475
+  service: neo4j-http
+  protocol: tcp
+  description: Neo4j Browser
+- port: 7688
+  service: neo4j-bolt
+  protocol: tcp
+  description: Neo4j Bolt protocol
+- port: 7880
+  service: livekit
+  protocol: tcp
+  description: LiveKit WebRTC server
+- port: 3478
+  service: livekit-turn
+  protocol: udp
+  description: TURN server
+- port: 80
+  service: ravenhelm-proxy
+  protocol: tcp
+  description: HTTP redirect
+- port: 443
+  service: ravenhelm-proxy
+  protocol: tcp
+  description: HTTPS termination
+platform:
+  hlidskjalf-api:
+    path: ~/Development/hlidskjalf/hlidskjalf
+    api_port: 8000
+    domain: hlidskjalf-api.ravenhelm.test
+    health_endpoint: /health
+    description: Platform control plane API
+  hlidskjalf-ui:
+    path: ~/Development/hlidskjalf/hlidskjalf/ui
+    ui_port: 3900
+    domain: hlidskjalf.ravenhelm.test
+    description: Platform dashboard (Norns Chat)
+  norns-langgraph:
+    path: ~/Development/hlidskjalf/hlidskjalf
+    api_port: 2024
+    domain: norns.ravenhelm.test
+    domain_aliases:
+      - langgraph.ravenhelm.test
+    health_endpoint: /info
+    description: LangGraph Norns API (The Three Sisters)
+  ollama:
+    path: (docker service)
+    api_port: 11434
+    domain: ollama.ravenhelm.test
+    health_endpoint: /api/tags
+    description: Local LLM Server (llama3.1, nomic-embed-text)
+  bifrost-gateway:
+    path: ~/Development/hlidskjalf/bifrost-gateway
+    api_port: 8050
+    domain: bifrost.ravenhelm.test
+    health_endpoint: /health
+    description: External services gateway (Telegram, Slack, etc.)
+    external_facing: true
+    note: Exposed to internet via tunnel for webhooks
+  livekit:
+    path: ~/Development/hlidskjalf/livekit
+    api_port: 7880
+    rtc_ports: 7881-7892
+    turn_port: 3478
+    domain: livekit.ravenhelm.test
+    health_endpoint: /healthz
+    description: WebRTC voice/video server
+    note: Used by ravenvoice for voice agents
+shared:
+  ravenmaskos-template:
+    path: ~/Development/hlidskjalf/templates/ravenmaskos
+    type: sandbox
+    description: FastAPI + Next.js template (templates/ravenmaskos)
+    preferred_range: sandbox_api
+  saaa-tests:
+    path: ~/Development/hlidskjalf/tests/saaa-tests
+    type: sandbox
+    description: Service-as-an-Agent test harness (tests/saaa-tests)
+personal:
+  jarvis:
+    path: ~/Development/nwalker85/Jarvis
+    api_port: 8101
+    ui_port: 3101
+    domain: jarvis.ravenhelm.test
+    realm: midgard
+    status: active
+    git_remote: github.com-nwalker
+    description: Personal AI assistant v1
+  myjarvis:
+    path: ~/Development/nwalker85/myjarvis
+    api_port: 8102
+    ui_port: 3102
+    domain: myjarvis.ravenhelm.test
+    realm: midgard
+    status: active
+    git_remote: github.com-nwalker
+    description: Personal AI assistant v2 (voice)
+work:
+  agentswarm:
+    path: ~/Development/Quant/agentswarm
+    api_port: 8201
+    ui_port: 3201
+    domain: saaa.ravenhelm.test
+    domain_aliases:
+    - agentcrucible.ravenhelm.test
+    realm: alfheim
+    status: active
+    git_remote: github.com-quant
+    description: Agent Crucible - voice AI platform
+    services:
+    - name: orchestrator
+      port: 8201
+    - name: frontend
+      port: 3201
+    - name: livekit
+      port: 7880
+  agentfoundry:
+    path: ~/Development/Quant/Projects/agentfoundry
+    api_port: 8202
+    ui_port: 3202
+    domain: foundry.ravenhelm.test
+    realm: alfheim
+    status: active
+    git_remote: github.com-quant
+    description: Agent builder platform
+  mytinycrm:
+    path: ~/Development/Quant/Projects/myTinyCRM
+    api_port: 8203
+    ui_port: 3203
+    domain: tinycrm.ravenhelm.test
+    realm: alfheim
+    status: active
+    git_remote: github.com-quant
+    description: CRM demo application
+  livekit-dual-agent:
+    path: ~/Development/Quant/Projects/livekit-dual-agent
+    api_port: 8204
+    ui_port: 3204
+    domain: livekit-demo.ravenhelm.test
+    realm: jotunheim
+    status: testing
+    git_remote: github.com-quant
+    description: LiveKit dual agent testing
+  m2c-demo:
+    path: ~/Development/Quant/Projects/m2c-demo
+    api_port: 8205
+    ui_port: 3205
+    domain: m2c.ravenhelm.test
+    realm: jotunheim
+    status: demo
+    git_remote: github.com-quant
+    description: M2C demo application
+  jira-interpreter:
+    path: ~/Development/Quant/Projects/JiraInterpreter
+    api_port: 8206
+    ui_port: 3206
+    domain: jira.ravenhelm.test
+    realm: alfheim
+    status: development
+    git_remote: github.com-quant
+    description: Jira integration tool
+next_available:
+  personal_api: 8103
+  personal_ui: 3103
+  work_api: 8207
+  work_ui: 3207
+  sandbox_api: 8300
+  sandbox_ui: 3300
+agents:
+  health-monitor:
+    port: 8100
+    protocol: http
+    health_endpoint: /info
+    description: Monitors service health, checks endpoints, and reports issues.

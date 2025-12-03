@@ -1,0 +1,71 @@
+# Ravenhelm Main Reverse Proxy
+# ============================
+# Central SSL termination and routing for all *.ravenhelm.test projects.
+# See README.md for full documentation.
+#
+# Quick Start:
+#   docker compose up -d
+#
+# Project Routing:
+#   *.saaa.ravenhelm.test           → localhost:8443  (SAAA)
+#   *.agentcrucible.ravenhelm.test  → localhost:9443  (Agent Crucible)
+#
+# Adding New Projects:
+#   1. Add server block in nginx.conf with unique port (e.g., 10443)
+#   2. Configure project's nginx to listen on that port with SSL
+#   3. Restart: docker compose restart nginx
+#
+# Certificate Management:
+#   Certs stored in ./config/certs/ - shared across all projects.
+#   See README.md for regeneration instructions.
+#
+# DNS:
+#   Handled by dnsmasq (port 15353) via /etc/resolver/ravenhelm.test
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: ravenhelm-proxy
+    restart: unless-stopped
+    ports:
+      # HTTP -> HTTPS redirect
+      - "80:80"
+      # Main HTTPS entry point for all *.ravenhelm.test
+      - "443:443"
+
+      # LiveKit WebRTC ports (proxied to SAAA project)
+      # WebSocket signaling
+      - "7885:7885"
+      # TCP fallback
+      - "7886:7886"
+      # UDP media ports
+      - "7887-7897:7887-7897/udp"
+
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/certs:/etc/nginx/certs:ro
+
+    extra_hosts:
+      # Allow container to reach host services
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - ravenhelm
+
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ravenhelm:
+    name: ravenhelm-network
+    driver: bridge

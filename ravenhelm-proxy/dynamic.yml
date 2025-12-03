@@ -1,0 +1,498 @@
+# Traefik Dynamic Configuration
+# ==============================
+# Dynamic routing and TLS configuration
+
+# TLS Configuration
+tls:
+  certificates:
+    - certFile: /certs/server.crt
+      keyFile: /certs/server.key
+
+http:
+  # ==========================================================================
+  # MIDDLEWARES
+  # ==========================================================================
+  middlewares:
+    secure-headers:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - OPTIONS
+          - PUT
+          - POST
+          - DELETE
+        accessControlMaxAge: 100
+        hostsProxyHeaders:
+          - "X-Forwarded-Host"
+        referrerPolicy: "same-origin"
+        sslRedirect: true
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        
+    compression:
+      compress: {}
+    
+    cors-all:
+      headers:
+        accessControlAllowOriginList:
+          - "*"
+        accessControlAllowMethods:
+          - "*"
+        accessControlAllowHeaders:
+          - "*"
+
+    # ==========================================================================
+    # ZERO-TRUST: Forward Auth via OAuth2-Proxy
+    # ==========================================================================
+    # This middleware sends all requests to oauth2-proxy for authentication.
+    # If the user is not authenticated, they are redirected to Zitadel SSO.
+    # If authenticated, the request is forwarded with user identity headers.
+    zero-trust-auth:
+      forwardAuth:
+        address: "http://host.docker.internal:4180/oauth2/auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-Auth-Request-User"
+          - "X-Auth-Request-Email"
+          - "X-Auth-Request-Groups"
+          - "X-Auth-Request-Access-Token"
+          - "Authorization"
+
+    # Chain: secure headers + zero-trust auth
+    protected:
+      chain:
+        middlewares:
+          - secure-headers
+          - zero-trust-auth
+
+  # ==========================================================================
+  # ROUTERS
+  # ==========================================================================
+  routers:
+    # ─────────────────────────────────────────────────────────────────────────
+    # AUTHENTICATION (Must be PUBLIC - no forward auth)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    # OAuth2-Proxy Auth Endpoints
+    oauth2-proxy:
+      rule: "Host(`auth.ravenhelm.test`)"
+      service: oauth2-proxy-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+      priority: 1000
+
+    # Traefik Dashboard (protected)
+    traefik-dashboard:
+      rule: "Host(`proxy.ravenhelm.test`)"
+      service: "api@internal"
+      middlewares:
+        - protected
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HLIÐSKJÁLF — Platform Services
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    # Norns LangGraph API (CORS for UI, auth handled by calling app)
+    # Note: The UI passes the user's token; API validates it directly
+    norns:
+      rule: "Host(`norns.ravenhelm.test`) || Host(`langgraph.ravenhelm.test`)"
+      service: norns-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    # Hlidskjalf UI (has native NextAuth/Zitadel SSO)
+    hlidskjalf-ui:
+      rule: "Host(`hlidskjalf.ravenhelm.test`)"
+      service: hlidskjalf-ui-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    # Hlidskjalf API (protected via forward auth)
+    hlidskjalf-api:
+      rule: "Host(`hlidskjalf-api.ravenhelm.test`)"
+      service: hlidskjalf-api-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # Ollama Local LLM (internal service, CORS for UI tools)
+    ollama:
+      rule: "Host(`ollama.ravenhelm.test`)"
+      service: ollama-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # OBSERVABILITY
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    # Grafana (has native Zitadel SSO)
+    grafana:
+      rule: "Host(`grafana.observe.ravenhelm.test`) || Host(`observe.ravenhelm.test`) || Host(`grafana.ravenhelm.test`)"
+      service: grafana-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    # Protected internal services (no native SSO)
+    prometheus:
+      rule: "Host(`prometheus.observe.ravenhelm.test`)"
+      service: prometheus-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    alertmanager:
+      rule: "Host(`alertmanager.observe.ravenhelm.test`)"
+      service: alertmanager-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    tempo:
+      rule: "Host(`tempo.observe.ravenhelm.test`)"
+      service: tempo-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # LangFuse (has native Zitadel SSO)
+    langfuse:
+      rule: "Host(`langfuse.ravenhelm.test`) || Host(`langfuse.observe.ravenhelm.test`)"
+      service: langfuse-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    phoenix:
+      rule: "Host(`phoenix.observe.ravenhelm.test`)"
+      service: phoenix-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # INFRASTRUCTURE (Protected)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    vault:
+      rule: "Host(`vault.ravenhelm.test`)"
+      service: vault-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # Identity Provider (PUBLIC - this IS the auth provider)
+    zitadel:
+      rule: "Host(`zitadel.ravenhelm.test`)"
+      service: zitadel-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+      priority: 1000
+
+    localstack:
+      rule: "Host(`localstack.ravenhelm.test`)"
+      service: localstack-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # Redpanda Console (has native Zitadel SSO)
+    events:
+      rule: "Host(`events.ravenhelm.test`) || Host(`redpanda.ravenhelm.test`)"
+      service: redpanda-console-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    n8n:
+      rule: "Host(`n8n.ravenhelm.test`)"
+      service: n8n-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # GitLab (has native SSO)
+    gitlab:
+      rule: "Host(`gitlab.ravenhelm.test`)"
+      service: gitlab-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    # NATS Monitoring (protected)
+    nats-monitor:
+      rule: "Host(`nats.ravenhelm.test`)"
+      service: nats-monitor-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # SPIRE Server (protected)
+    spire:
+      rule: "Host(`spire.ravenhelm.test`)"
+      service: spire-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # OBSERVABILITY (Additional)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    loki:
+      rule: "Host(`loki.observe.ravenhelm.test`)"
+      service: loki-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # Alloy (replaces OTEL Collector) - UI (protected)
+    alloy:
+      rule: "Host(`alloy.observe.ravenhelm.test`)"
+      service: alloy-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # OTLP receiver (via Alloy) - API endpoint, no UI auth needed
+    otel:
+      rule: "Host(`otel.ravenhelm.test`) || Host(`otel.observe.ravenhelm.test`)"
+      service: otel-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # REALTIME
+    # ─────────────────────────────────────────────────────────────────────────
+
+    livekit:
+      rule: "Host(`livekit.ravenhelm.test`)"
+      service: livekit-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # RAG PIPELINE (Protected)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    weaviate:
+      rule: "Host(`weaviate.ravenhelm.test`) || Host(`vectors.ravenhelm.test`)"
+      service: weaviate-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    embeddings:
+      rule: "Host(`embeddings.ravenhelm.test`)"
+      service: embeddings-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    reranker:
+      rule: "Host(`reranker.ravenhelm.test`)"
+      service: reranker-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    docling:
+      rule: "Host(`docling.ravenhelm.test`) || Host(`docs.ravenhelm.test`)"
+      service: docling-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # GRAPH DATABASES (Protected)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    memgraph:
+      rule: "Host(`memgraph.ravenhelm.test`)"
+      service: memgraph-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    neo4j:
+      rule: "Host(`neo4j.ravenhelm.test`)"
+      service: neo4j-svc
+      middlewares:
+        - protected
+      tls: {}
+
+  # ==========================================================================
+  # SERVICES (host.docker.internal points to host machine)
+  # ==========================================================================
+  services:
+    # Zero-Trust Auth
+    oauth2-proxy-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4180"
+
+    # Platform
+    norns-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:2024"
+    
+    hlidskjalf-ui-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3900"
+    
+    hlidskjalf-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8000"
+
+    ollama-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:11434"
+
+    # Observability
+    grafana-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3000"
+    
+    prometheus-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:9090"
+    
+    alertmanager-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:9093"
+    
+    tempo-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3200"
+    
+    langfuse-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3001"
+    
+    phoenix-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:6006"
+
+    # Infrastructure
+    vault-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8200"
+    
+    zitadel-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8080"
+    
+    localstack-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4566"
+    
+    redpanda-console-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8088"
+    
+    n8n-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:5678"
+
+    # DevOps
+    gitlab-svc:
+      loadBalancer:
+        servers:
+          - url: "http://gitlab-sre-gitlab:80"  # GitLab on ravenhelm-network
+
+    nats-monitor-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8222"
+
+    spire-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8081"
+
+    # Observability (Additional)
+    loki-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3100"
+
+    # Alloy UI
+    alloy-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:12345"
+
+    # OTLP HTTP (via Alloy)
+    otel-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4318"
+
+    # Realtime
+    livekit-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:7880"
+
+    # RAG Pipeline
+    weaviate-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8084"
+    
+    embeddings-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8085"
+    
+    reranker-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8086"
+    
+    docling-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8087"
+
+    # Graph Databases
+    memgraph-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3010"
+    
+    neo4j-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:7475"

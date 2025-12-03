@@ -1,0 +1,53 @@
+# Terraform CI/CD Jobs
+# =====================
+
+.terraform:base:
+  image: hashicorp/terraform:1.6
+  before_script:
+    - cd ${TF_ROOT}/environments/${TF_ENV}
+    - |
+      cat > backend.tf << EOF
+      terraform {
+        backend "http" {
+          address        = "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_ENV}"
+          lock_address   = "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_ENV}/lock"
+          unlock_address = "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_ENV}/lock"
+          username       = "gitlab-ci-token"
+          password       = "${CI_JOB_TOKEN}"
+          lock_method    = "POST"
+          unlock_method  = "DELETE"
+          retry_wait_min = 5
+        }
+      }
+      EOF
+    - terraform init -reconfigure
+
+terraform:plan:
+  extends: .terraform:base
+  stage: validate
+  script:
+    - terraform plan -out=plan.tfplan
+    - terraform show -json plan.tfplan > plan.json
+  artifacts:
+    paths:
+      - ${TF_ROOT}/environments/${TF_ENV}/plan.tfplan
+      - ${TF_ROOT}/environments/${TF_ENV}/plan.json
+    reports:
+      terraform: ${TF_ROOT}/environments/${TF_ENV}/plan.json
+    expire_in: 1 week
+
+terraform:apply:
+  extends: .terraform:base
+  script:
+    - terraform apply -auto-approve plan.tfplan
+  dependencies:
+    - terraform:plan
+  when: manual
+
+terraform:destroy:
+  extends: .terraform:base
+  script:
+    - terraform destroy -auto-approve
+  when: manual
+  allow_failure: true
+

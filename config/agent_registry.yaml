@@ -1,0 +1,22 @@
+agents:
+  health-monitor:
+    name: Health Monitor
+    class: HealthMonitorAgent
+    description: Monitors service health, checks endpoints, and reports issues.
+    version: 1.0.0
+    model: gpt-4o-mini
+    port: 8100
+    status: created
+    skills:
+    - analyze-logs
+    - docker-operations
+    tools:
+    - agent_status
+    container:
+      image: ravenhelm/health-monitor:latest
+      network: gitlab-network
+      restart_policy: unless-stopped
+    created_at: '2025-12-02T20:28:55.309058'
+    created_by: norns
+description: Ravenhelm Agent Registry
+version: 1.0.0

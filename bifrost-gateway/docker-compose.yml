@@ -1,0 +1,78 @@
+# Bifrost Gateway — Docker Compose
+# ==================================
+# Standalone deployment for external services gateway
+
+services:
+  bifrost-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bifrost-gateway
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=bifrost-gateway"
+      - "ravenhelm.workload=external-gateway"
+      # Traefik labels for edge routing (if using traefik)
+      - "traefik.enable=true"
+      - "traefik.http.routers.bifrost.rule=Host(`bifrost.ravenhelm.test`)"
+      - "traefik.http.routers.bifrost.tls=true"
+      - "traefik.http.services.bifrost.loadbalancer.server.port=8050"
+    environment:
+      # Service config
+      - APP_ENV=${APP_ENV:-development}
+      - DEBUG=${DEBUG:-false}
+      
+      # AI Backend selection: norns, openai, anthropic, mcp
+      - AI_BACKEND=${AI_BACKEND:-norns}
+      
+      # Norns Backend (default)
+      - NORNS_API_URL=http://gitlab-sre-hlidskjalf:8900
+      - NORNS_LANGGRAPH_URL=http://gitlab-sre-langgraph:2024
+      - USE_LANGGRAPH=${USE_LANGGRAPH:-true}
+      
+      # OpenAI Backend
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      
+      # Anthropic Backend
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      
+      # MCP Backend
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-}
+      - MCP_CHAT_TOOL=${MCP_CHAT_TOOL:-chat}
+      
+      # Custom system prompt (for direct backends)
+      - SYSTEM_PROMPT=${SYSTEM_PROMPT:-}
+      
+      # Telegram Adapter
+      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-true}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:-}
+      - TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS:-}
+      - TELEGRAM_RATE_LIMIT_MESSAGES=${TELEGRAM_RATE_LIMIT_MESSAGES:-30}
+      - TELEGRAM_RATE_LIMIT_WINDOW=${TELEGRAM_RATE_LIMIT_WINDOW:-60}
+      
+      # Slack Adapter (future)
+      - SLACK_ENABLED=${SLACK_ENABLED:-false}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      
+      # Redis for state
+      - REDIS_URL=redis://gitlab-sre-redis:6379/3
+    ports:
+      - "8050:8050"
+    networks:
+      - gitlab-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8050/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  gitlab-network:
+    external: true
+    name: hlidskjalf_gitlab-network
+

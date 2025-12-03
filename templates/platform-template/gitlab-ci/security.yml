@@ -1,0 +1,90 @@
+# Security Scanning Jobs
+# ======================
+
+# Static Application Security Testing
+sast:
+  stage: security
+  image: semgrep/semgrep:latest
+  script:
+    - semgrep scan --config auto --json --output gl-sast-report.json . || true
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+    paths:
+      - gl-sast-report.json
+  allow_failure: true
+
+# Dependency Scanning
+dependency_scanning:
+  stage: security
+  image: python:3.13-slim
+  script:
+    - pip install pip-audit safety
+    - pip-audit -r requirements.txt --format json > dependency-audit.json || true
+    - safety check -r requirements.txt --json > dependency-safety.json || true
+  artifacts:
+    paths:
+      - dependency-audit.json
+      - dependency-safety.json
+  allow_failure: true
+  rules:
+    - exists:
+        - requirements.txt
+        - pyproject.toml
+
+# Secret Detection
+secret_detection:
+  stage: security
+  image: trufflesecurity/trufflehog:latest
+  script:
+    - trufflehog git file://. --only-verified --json > secrets-report.json || true
+  artifacts:
+    paths:
+      - secrets-report.json
+  allow_failure: true
+
+# Container Scanning
+container_scanning:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --format json --output container-scan.json ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  artifacts:
+    paths:
+      - container-scan.json
+  rules:
+    - exists:
+        - Dockerfile
+  allow_failure: true
+  needs:
+    - docker:build
+
+# Infrastructure Security (Terraform)
+iac_scanning:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy config --format json --output iac-scan.json terraform/
+  artifacts:
+    paths:
+      - iac-scan.json
+  rules:
+    - exists:
+        - terraform/**/*.tf
+  allow_failure: true
+
+# License Compliance
+license_scanning:
+  stage: security
+  image: python:3.13-slim
+  script:
+    - pip install pip-licenses
+    - pip-licenses --format=json > licenses.json
+  artifacts:
+    paths:
+      - licenses.json
+  allow_failure: true
+  rules:
+    - exists:
+        - requirements.txt
+

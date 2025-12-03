@@ -1,0 +1,58 @@
+# Docker CI/CD Jobs
+# ==================
+
+.docker:base:
+  image: docker:24-dind
+  services:
+    - name: docker:24-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  before_script:
+    - docker login -u ${CI_REGISTRY_USER} -p ${CI_REGISTRY_PASSWORD} ${CI_REGISTRY}
+
+docker:build:
+  extends: .docker:base
+  stage: build
+  script:
+    - |
+      docker build \
+        --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+        --build-arg VCS_REF=${CI_COMMIT_SHA} \
+        --build-arg VERSION=${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}} \
+        -t ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} \
+        -t ${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_SLUG} \
+        .
+    - docker push ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_SLUG}
+  rules:
+    - exists:
+        - Dockerfile
+
+docker:tag-latest:
+  extends: .docker:base
+  stage: post-deploy
+  script:
+    - docker pull ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    - docker tag ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} ${CI_REGISTRY_IMAGE}:latest
+    - docker push ${CI_REGISTRY_IMAGE}:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - docker:build
+
+docker:tag-release:
+  extends: .docker:base
+  stage: post-deploy
+  script:
+    - docker pull ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    - docker tag ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} ${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}
+    - docker push ${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - docker:build
+

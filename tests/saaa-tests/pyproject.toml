@@ -1,0 +1,87 @@
+[project]
+name = "saaa-tests"
+version = "0.1.0"
+description = "Testing suite for SAAA multi-agent system: governance, latency, load, E2E, and voice"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    # Core testing
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.5.0",
+
+    # HTTP client for agent testing
+    "httpx>=0.27.0",
+    "aiohttp>=3.9.0",
+
+    # DeepEval for LLM/governance testing
+    "deepeval>=1.0.0",
+
+    # Playwright for E2E frontend
+    "playwright>=1.40.0",
+    "pytest-playwright>=0.4.4",
+
+    # Locust for load testing
+    "locust>=2.20.0",
+
+    # OpenTelemetry for trace assertions (Tracetest integration)
+    "opentelemetry-api>=1.22.0",
+    "opentelemetry-sdk>=1.22.0",
+    "opentelemetry-exporter-otlp>=1.22.0",
+
+    # Audio testing utilities
+    "pydub>=0.25.1",
+    "numpy>=1.26.0",
+
+    # Utilities
+    "pydantic>=2.5.0",
+    "structlog>=24.1.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "mypy>=1.8.0",
+]
+scenario = [
+    # Scenario/LangWatch for audio-to-audio E2E
+    "scenario-testing>=0.1.0",
+    "langwatch>=0.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "governance: marks tests for governance/policy compliance (deselect with '-m \"not governance\"')",
+    "latency: marks tests for latency budget assertions",
+    "load: marks tests for load/stress testing",
+    "e2e: marks tests for end-to-end frontend testing",
+    "voice: marks tests for audio/voice pipeline testing",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true

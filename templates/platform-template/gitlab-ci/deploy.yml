@@ -1,0 +1,85 @@
+# Deployment Jobs
+# ================
+
+.deploy:base:
+  image: 
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
+  before_script:
+    - kubectl config use-context ${KUBE_CONTEXT}
+
+# Deploy to Kubernetes
+deploy:k8s:
+  extends: .deploy:base
+  stage: deploy-${ENV}
+  script:
+    - |
+      kubectl set image deployment/${APP_NAME} \
+        ${APP_NAME}=${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} \
+        -n ${NAMESPACE}
+    - kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=300s
+  environment:
+    name: ${ENV}
+    url: https://${ENV}.${APP_NAME}.ravenhelm.test
+  rules:
+    - if: $DEPLOY_TARGET == "kubernetes"
+
+# Deploy via Docker Compose (for local/dev environments)
+deploy:compose:
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  stage: deploy-${ENV}
+  script:
+    - |
+      docker compose -f docker-compose.${ENV}.yml pull
+      docker compose -f docker-compose.${ENV}.yml up -d --remove-orphans
+      docker compose -f docker-compose.${ENV}.yml ps
+  environment:
+    name: ${ENV}
+    url: https://${ENV}.${APP_NAME}.ravenhelm.test
+  rules:
+    - if: $DEPLOY_TARGET == "compose"
+    - exists:
+        - docker-compose.${ENV}.yml
+
+# Deploy via Terraform (infrastructure + app)
+deploy:terraform:
+  image: hashicorp/terraform:1.6
+  stage: deploy-${ENV}
+  variables:
+    TF_VAR_app_image: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    TF_VAR_environment: ${ENV}
+  before_script:
+    - cd terraform/environments/${ENV}
+    - terraform init
+  script:
+    - terraform plan -out=plan.tfplan
+    - terraform apply -auto-approve plan.tfplan
+  environment:
+    name: ${ENV}
+    url: https://${ENV}.${APP_NAME}.ravenhelm.test
+    on_stop: destroy:${ENV}
+  artifacts:
+    paths:
+      - terraform/environments/${ENV}/.terraform
+      - terraform/environments/${ENV}/terraform.tfstate
+  rules:
+    - if: $DEPLOY_TARGET == "terraform"
+    - exists:
+        - terraform/environments/${ENV}/**/*.tf
+
+# Rollback deployment
+rollback:
+  image: docker:24-dind
+  stage: deploy-${ENV}
+  script:
+    - |
+      # Get previous image tag
+      PREV_TAG=$(docker inspect --format='{{.Config.Image}}' ${APP_NAME} | awk -F: '{print $2}')
+      echo "Rolling back from ${CI_COMMIT_SHORT_SHA} to ${PREV_TAG}"
+      docker compose -f docker-compose.${ENV}.yml pull
+      docker compose -f docker-compose.${ENV}.yml up -d
+  when: manual
+  allow_failure: true
+

@@ -1,0 +1,307 @@
+version: "3.8"
+
+services:
+  # ============================================
+  # Application
+  # ============================================
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/app
+      - REDIS_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - JWT_SECRET_KEY=dev-secret-change-in-production
+      - OPENFGA_API_URL=http://openfga:8080
+      - ZITADEL_ISSUER=http://zitadel:8080
+    volumes:
+      - ../src:/app/src:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    networks:
+      - backend
+
+  # ============================================
+  # PostgreSQL
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  # ============================================
+  # Redis
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  # ============================================
+  # Kafka (with KRaft - no Zookeeper)
+  # ============================================
+  kafka:
+    image: bitnami/kafka:3.6
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - backend
+
+  # ============================================
+  # OpenFGA (Authorization)
+  # ============================================
+  openfga:
+    image: openfga/openfga:latest
+    ports:
+      - "8080:8080"   # HTTP API
+      - "8081:8081"   # gRPC
+      - "3001:3000"   # Playground (mapped to 3001 to avoid conflict with Grafana)
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://postgres:postgres@postgres:5432/openfga?sslmode=disable
+      - OPENFGA_PLAYGROUND_ENABLED=true
+    command: run
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+
+  openfga-migrate:
+    image: openfga/openfga:latest
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=postgres
+      - OPENFGA_DATASTORE_URI=postgres://postgres:postgres@postgres:5432/openfga?sslmode=disable
+    command: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openfga-createdb:
+        condition: service_completed_successfully
+    networks:
+      - backend
+
+  openfga-createdb:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: postgres
+    command: >
+      sh -c "psql -h postgres -U postgres -c 'CREATE DATABASE openfga' || true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+  # ============================================
+  # Zitadel (Identity Provider)
+  # ============================================
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v2.64.1
+    command: start-from-init --masterkeyFromEnv --tlsMode disabled
+    ports:
+      - "8085:8080"
+    environment:
+      - ZITADEL_MASTERKEY=MasterkeyNeedsToHave32Characters
+      - ZITADEL_DATABASE_POSTGRES_HOST=postgres
+      - ZITADEL_DATABASE_POSTGRES_PORT=5432
+      - ZITADEL_DATABASE_POSTGRES_DATABASE=zitadel
+      - ZITADEL_DATABASE_POSTGRES_USER_USERNAME=postgres
+      - ZITADEL_DATABASE_POSTGRES_USER_PASSWORD=postgres
+      - ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE=disable
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME=postgres
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD=postgres
+      - ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE=disable
+      - ZITADEL_EXTERNALSECURE=false
+      - ZITADEL_EXTERNALPORT=8085
+      - ZITADEL_EXTERNALDOMAIN=localhost
+      - ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME=admin
+      - ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD=Admin123!
+      - ZITADEL_FIRSTINSTANCE_MACHINEKEYPATH=/machinekey/zitadel-admin-sa.json
+      - ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME=zitadel-admin-sa
+      - ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME=Admin
+      - ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINEKEY_TYPE=1
+    volumes:
+      - zitadel_machinekey:/machinekey
+    depends_on:
+      zitadel-createdb:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - backend
+
+  zitadel-createdb:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: postgres
+    command: >
+      sh -c "psql -h postgres -U postgres -c 'CREATE DATABASE zitadel' || true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+  # ============================================
+  # LocalStack (AWS Services)
+  # ============================================
+  localstack:
+    image: localstack/localstack:3.0
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=secretsmanager,ssm,kms,s3,sqs,sns
+      - DEBUG=0
+      - DATA_DIR=/var/lib/localstack/data
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - backend
+
+  # ============================================
+  # OpenTelemetry Collector
+  # ============================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.92.0
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics (collector)
+      - "8889:8889"   # Prometheus exporter
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    networks:
+      - backend
+
+  # ============================================
+  # Jaeger (Tracing UI)
+  # ============================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Accept jaeger.thrift
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - backend
+
+  # ============================================
+  # Prometheus
+  # ============================================
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    networks:
+      - backend
+
+  # ============================================
+  # Grafana (Dashboards)
+  # ============================================
+  grafana:
+    image: grafana/grafana:10.2.3
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+  localstack_data:
+  prometheus_data:
+  grafana_data:
+  zitadel_machinekey:
+
+networks:
+  backend:
+    driver: bridge

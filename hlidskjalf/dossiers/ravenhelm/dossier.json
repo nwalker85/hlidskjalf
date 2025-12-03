@@ -1,0 +1,393 @@
+{
+  "$schema": "https://schemas.domainintelligenceschema.org/dis/1.6.0/DISDossier.schema.json",
+  "dossierId": "ravenhelm-platform-v1",
+  "name": "Ravenhelm Platform Domain",
+  "version": "1.0.0",
+  "disSpecificationRef": "1.6.0",
+  "description": "Domain Intelligence for the Ravenhelm multi-agent orchestration platform",
+  "domainName": "platform-orchestration",
+  
+  "entities": [
+    {
+      "entityId": "ent-norns-agent",
+      "name": "Norns Agent",
+      "entityType": "agent",
+      "description": "The primary AI orchestrator - the three Norns who weave fate",
+      "assignedRoleIds": ["role-orchestrator", "role-planner"],
+      "attributes": [
+        {"name": "model", "type": "string", "description": "LLM model used"},
+        {"name": "session_id", "type": "string", "description": "Current session"}
+      ]
+    },
+    {
+      "entityId": "ent-subagent",
+      "name": "Specialized Subagent",
+      "entityType": "agent",
+      "description": "Worker agent spawned by Norns for specific tasks",
+      "assignedRoleIds": ["role-worker"],
+      "attributes": [
+        {"name": "subagent_type", "type": "string"},
+        {"name": "status", "type": "string"}
+      ]
+    },
+    {
+      "entityId": "ent-user",
+      "name": "User",
+      "entityType": "data",
+      "description": "Human user interacting with the platform",
+      "primaryKey": "user_id",
+      "assignedRoleIds": ["role-user"],
+      "attributes": [
+        {"name": "user_id", "type": "string"},
+        {"name": "preferences", "type": "object"},
+        {"name": "role", "type": "string"}
+      ]
+    },
+    {
+      "entityId": "ent-session",
+      "name": "Session",
+      "entityType": "data",
+      "description": "User interaction session",
+      "primaryKey": "session_id",
+      "foreignKeys": {"user_id": "ent-user"},
+      "attributes": [
+        {"name": "session_id", "type": "string"},
+        {"name": "started_at", "type": "datetime"},
+        {"name": "status", "type": "string"}
+      ]
+    },
+    {
+      "entityId": "ent-memory",
+      "name": "Memory Fragment",
+      "entityType": "data",
+      "description": "A piece of stored memory in Muninn",
+      "primaryKey": "memory_id",
+      "attributes": [
+        {"name": "memory_id", "type": "string"},
+        {"name": "type", "type": "string"},
+        {"name": "weight", "type": "number"},
+        {"name": "content", "type": "string"}
+      ]
+    },
+    {
+      "entityId": "ent-skill",
+      "name": "Agent Skill",
+      "entityType": "data",
+      "description": "A learned capability stored as SKILL.md",
+      "primaryKey": "skill_id",
+      "attributes": [
+        {"name": "skill_id", "type": "string"},
+        {"name": "name", "type": "string"},
+        {"name": "tools", "type": "array"}
+      ]
+    },
+    {
+      "entityId": "ent-deployment",
+      "name": "Deployment",
+      "entityType": "data",
+      "description": "A deployed service or container",
+      "primaryKey": "deployment_id",
+      "attributes": [
+        {"name": "deployment_id", "type": "string"},
+        {"name": "service_name", "type": "string"},
+        {"name": "status", "type": "string"},
+        {"name": "port", "type": "number"}
+      ]
+    },
+    {
+      "entityId": "ent-task",
+      "name": "Task",
+      "entityType": "data",
+      "description": "A unit of work to be executed",
+      "primaryKey": "task_id",
+      "foreignKeys": {"session_id": "ent-session"},
+      "attributes": [
+        {"name": "task_id", "type": "string"},
+        {"name": "description", "type": "string"},
+        {"name": "status", "type": "string"},
+        {"name": "priority", "type": "number"}
+      ]
+    }
+  ],
+  
+  "roles": [
+    {
+      "roleId": "role-orchestrator",
+      "name": "Orchestrator",
+      "roleType": "agent",
+      "description": "Primary decision-maker and task coordinator",
+      "agentArchetype": "planner"
+    },
+    {
+      "roleId": "role-planner",
+      "name": "Planner",
+      "roleType": "agent",
+      "description": "Creates and manages task plans",
+      "agentArchetype": "planner"
+    },
+    {
+      "roleId": "role-worker",
+      "name": "Worker",
+      "roleType": "agent",
+      "description": "Executes specific tasks delegated by orchestrator",
+      "agentArchetype": "executor"
+    },
+    {
+      "roleId": "role-user",
+      "name": "User",
+      "roleType": "human",
+      "description": "Human user of the platform"
+    },
+    {
+      "roleId": "role-admin",
+      "name": "Administrator",
+      "roleType": "human",
+      "description": "Platform administrator with elevated permissions"
+    }
+  ],
+  
+  "triplets": [
+    {
+      "tripletId": "tri-norns-create-task",
+      "name": "Norns creates task",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-orchestrator",
+      "stance": "ACT",
+      "modeOfInteraction": "CREATE",
+      "targetEntityId": "ent-task",
+      "description": "Norns creates a new task for execution"
+    },
+    {
+      "tripletId": "tri-norns-read-memory",
+      "name": "Norns reads memory",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-orchestrator",
+      "stance": "ACT",
+      "modeOfInteraction": "READ",
+      "targetEntityId": "ent-memory",
+      "description": "Norns recalls memories from Muninn"
+    },
+    {
+      "tripletId": "tri-norns-update-memory",
+      "name": "Norns updates memory",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-orchestrator",
+      "stance": "ACT",
+      "modeOfInteraction": "UPDATE",
+      "targetEntityId": "ent-memory",
+      "description": "Norns reinforces or updates a memory"
+    },
+    {
+      "tripletId": "tri-norns-initiate-subagent",
+      "name": "Norns initiates subagent",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-orchestrator",
+      "stance": "ACT",
+      "modeOfInteraction": "INITIATE",
+      "targetEntityId": "ent-subagent",
+      "description": "Norns spawns a specialized subagent"
+    },
+    {
+      "tripletId": "tri-subagent-respond-task",
+      "name": "Subagent responds to task",
+      "actingEntityId": "ent-subagent",
+      "actingRoleId": "role-worker",
+      "stance": "REACT",
+      "modeOfInteraction": "RESPOND",
+      "targetEntityId": "ent-task",
+      "description": "Subagent completes assigned task"
+    },
+    {
+      "tripletId": "tri-norns-notify-user",
+      "name": "Norns notifies user",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-orchestrator",
+      "stance": "ACT",
+      "modeOfInteraction": "NOTIFY",
+      "targetEntityId": "ent-user",
+      "description": "Norns sends notification to user"
+    },
+    {
+      "tripletId": "tri-user-initiate-session",
+      "name": "User initiates session",
+      "actingEntityId": "ent-user",
+      "actingRoleId": "role-user",
+      "stance": "ACT",
+      "modeOfInteraction": "INITIATE",
+      "targetEntityId": "ent-session",
+      "description": "User starts a new conversation session"
+    },
+    {
+      "tripletId": "tri-norns-create-skill",
+      "name": "Norns creates skill",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-planner",
+      "stance": "ACT",
+      "modeOfInteraction": "CREATE",
+      "targetEntityId": "ent-skill",
+      "description": "Norns learns and creates a new skill"
+    },
+    {
+      "tripletId": "tri-norns-read-skill",
+      "name": "Norns reads skill",
+      "actingEntityId": "ent-norns-agent",
+      "actingRoleId": "role-orchestrator",
+      "stance": "ACT",
+      "modeOfInteraction": "READ",
+      "targetEntityId": "ent-skill",
+      "description": "Norns reads skill instructions"
+    },
+    {
+      "tripletId": "tri-admin-create-deployment",
+      "name": "Admin creates deployment",
+      "actingEntityId": "ent-user",
+      "actingRoleId": "role-admin",
+      "stance": "ACT",
+      "modeOfInteraction": "CREATE",
+      "targetEntityId": "ent-deployment",
+      "description": "Administrator deploys a new service"
+    }
+  ],
+  
+  "accessGates": [
+    {
+      "gateId": "gate-orchestrator-task",
+      "roleId": "role-orchestrator",
+      "entityId": "ent-task",
+      "allowedModes": ["CREATE", "READ", "UPDATE", "DELETE"],
+      "description": "Orchestrator has full control over tasks"
+    },
+    {
+      "gateId": "gate-orchestrator-memory",
+      "roleId": "role-orchestrator",
+      "entityId": "ent-memory",
+      "allowedModes": ["CREATE", "READ", "UPDATE"],
+      "description": "Orchestrator can manage memories"
+    },
+    {
+      "gateId": "gate-orchestrator-subagent",
+      "roleId": "role-orchestrator",
+      "entityId": "ent-subagent",
+      "allowedModes": ["INITIATE", "READ", "NOTIFY"],
+      "description": "Orchestrator can spawn and monitor subagents"
+    },
+    {
+      "gateId": "gate-orchestrator-skill",
+      "roleId": "role-orchestrator",
+      "entityId": "ent-skill",
+      "allowedModes": ["CREATE", "READ", "UPDATE"],
+      "description": "Orchestrator can manage skills"
+    },
+    {
+      "gateId": "gate-worker-task",
+      "roleId": "role-worker",
+      "entityId": "ent-task",
+      "allowedModes": ["READ", "RESPOND"],
+      "description": "Workers can read and respond to tasks"
+    },
+    {
+      "gateId": "gate-user-session",
+      "roleId": "role-user",
+      "entityId": "ent-session",
+      "allowedModes": ["INITIATE", "READ"],
+      "gateCondition": "user.authenticated == `true`",
+      "description": "Authenticated users can start sessions"
+    },
+    {
+      "gateId": "gate-admin-deployment",
+      "roleId": "role-admin",
+      "entityId": "ent-deployment",
+      "allowedModes": ["CREATE", "READ", "UPDATE", "DELETE"],
+      "description": "Admins have full control over deployments"
+    }
+  ],
+  
+  "entityModes": [
+    {
+      "entryId": "em-norns-agent",
+      "entityId": "ent-norns-agent",
+      "modes": ["CREATE", "READ", "UPDATE", "DELETE", "INITIATE", "RESPOND", "NOTIFY"],
+      "stance": "ACT",
+      "description": "Norns can perform all operations proactively"
+    },
+    {
+      "entryId": "em-subagent",
+      "entityId": "ent-subagent",
+      "modes": ["READ", "RESPOND"],
+      "stance": "REACT",
+      "description": "Subagents react to assigned tasks"
+    }
+  ],
+  
+  "relationships": [
+    {
+      "relationshipId": "rel-session-user",
+      "sourceId": "ent-session",
+      "targetId": "ent-user",
+      "relationshipType": "belongs_to",
+      "description": "Session belongs to a user"
+    },
+    {
+      "relationshipId": "rel-task-session",
+      "sourceId": "ent-task",
+      "targetId": "ent-session",
+      "relationshipType": "created_in",
+      "description": "Task created within a session"
+    },
+    {
+      "relationshipId": "rel-memory-user",
+      "sourceId": "ent-memory",
+      "targetId": "ent-user",
+      "relationshipType": "associated_with",
+      "description": "Memory may be associated with a user"
+    },
+    {
+      "relationshipId": "rel-subagent-norns",
+      "sourceId": "ent-subagent",
+      "targetId": "ent-norns-agent",
+      "relationshipType": "spawned_by",
+      "description": "Subagent spawned by Norns"
+    }
+  ],
+  
+  "functions": [
+    {
+      "functionId": "fn-recall-memory",
+      "name": "recall_memory",
+      "description": "Semantic search over Muninn memories",
+      "inputParameters": [
+        {"name": "query", "type": "string", "required": true},
+        {"name": "k", "type": "integer", "default": 5}
+      ],
+      "outputParameters": [
+        {"name": "memories", "type": "array"}
+      ]
+    },
+    {
+      "functionId": "fn-store-memory",
+      "name": "store_memory",
+      "description": "Store a new memory fragment",
+      "inputParameters": [
+        {"name": "content", "type": "string", "required": true},
+        {"name": "type", "type": "string", "default": "episodic"}
+      ],
+      "outputParameters": [
+        {"name": "memory_id", "type": "string"}
+      ]
+    },
+    {
+      "functionId": "fn-spawn-subagent",
+      "name": "spawn_subagent",
+      "description": "Spawn a specialized subagent",
+      "inputParameters": [
+        {"name": "agent_type", "type": "string", "required": true},
+        {"name": "skills", "type": "array"}
+      ],
+      "outputParameters": [
+        {"name": "agent_id", "type": "string"},
+        {"name": "status", "type": "string"}
+      ]
+    }
+  ]
+}
+

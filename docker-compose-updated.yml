@@ -1,0 +1,13 @@
+# Creating updated docker-compose with Traefik labels
+# This will include the Traefik autodiscovery labels for key services
+
+# Adding these services to the edge network and Traefik labels:
+# - grafana (grafana.observe.ravenhelm.test)
+# - langfuse (langfuse.observe.ravenhelm.test)  
+# - phoenix (phoenix.observe.ravenhelm.test)
+# - redpanda-console (events.ravenhelm.test)
+# - openbao (vault.ravenhelm.test)
+# - n8n (n8n.ravenhelm.test)
+# - hlidskjalf (hlidskjalf.ravenhelm.test)
+
+# Let me create a script to update the services instead

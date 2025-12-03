@@ -1,0 +1,43 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'default-receiver'
+
+  routes:
+    # Critical alerts - immediate
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      group_wait: 0s
+      repeat_interval: 5m
+
+    # Cost alerts - specific handling
+    - match:
+        alertname: HighCostUsage
+      receiver: 'cost-alerts'
+
+receivers:
+  - name: 'default-receiver'
+    # For local dev, just log alerts
+    # In prod, configure Slack/PagerDuty/etc
+
+  - name: 'critical-receiver'
+    # For local dev, just log
+    # webhook_configs:
+    #   - url: 'http://localhost:8080/alerts'
+
+  - name: 'cost-alerts'
+    # Cost-specific alerting
+    # Could integrate with your A2A cost tracking
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']

@@ -1,0 +1,178 @@
+// =============================================================================
+// Grafana Alloy Configuration
+// =============================================================================
+// Unified observability collector for:
+// - Docker container logs → Loki
+// - Application metrics → Prometheus
+// - Traces → Tempo (via OTLP)
+// =============================================================================
+
+// Logging configuration
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// -----------------------------------------------------------------------------
+// LOGGING: Docker Container Logs → Loki
+// -----------------------------------------------------------------------------
+
+// Use loki.source.docker to collect logs from Docker containers
+// This works with Docker Desktop on macOS (unlike file-based discovery)
+loki.source.docker "docker_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.containers.targets
+  forward_to = [loki.process.docker_logs.receiver]
+  
+  relabel_rules = loki.relabel.docker_labels.rules
+}
+
+// Discover running Docker containers
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+  
+  filter {
+    name   = "status"
+    values = ["running"]
+  }
+}
+
+// Relabel rules for Docker labels
+loki.relabel "docker_labels" {
+  forward_to = []
+
+  // Container name
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // Docker Compose service name
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  // Docker Compose project
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "project"
+  }
+
+  // Container ID
+  rule {
+    source_labels = ["__meta_docker_container_id"]
+    target_label  = "container_id"
+  }
+
+  // Job label from service name
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "job"
+  }
+}
+
+// Process logs with level extraction
+loki.process "docker_logs" {
+  forward_to = [loki.write.loki.receiver]
+
+  // Use Docker's built-in log parsing
+  stage.docker {}
+}
+
+// Write to Loki
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// -----------------------------------------------------------------------------
+// METRICS: Scrape Prometheus metrics
+// -----------------------------------------------------------------------------
+
+// Scrape Alloy's own metrics
+prometheus.scrape "alloy_self" {
+  targets = [{
+    __address__ = "127.0.0.1:12345",
+  }]
+  forward_to = [prometheus.remote_write.prometheus.receiver]
+  job_name   = "alloy"
+}
+
+// Discover Docker containers with exposed metrics
+discovery.relabel "docker_metrics" {
+  targets = discovery.docker.containers.targets
+
+  // Keep containers with prometheus port label
+  rule {
+    source_labels = ["__meta_docker_container_label_prometheus_port"]
+    action        = "keep"
+    regex         = ".+"
+  }
+
+  // Set the scrape address
+  rule {
+    source_labels = ["__meta_docker_network_ip", "__meta_docker_container_label_prometheus_port"]
+    separator     = ":"
+    target_label  = "__address__"
+  }
+
+  // Set job name
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "job"
+  }
+}
+
+// Remote write to Prometheus
+prometheus.remote_write "prometheus" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// -----------------------------------------------------------------------------
+// TRACING: OTLP receiver → Tempo
+// -----------------------------------------------------------------------------
+
+// Receive OTLP traces
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+// Export to Tempo
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// LOGGING: Application OTLP logs → Loki (for apps sending OTLP logs)
+// -----------------------------------------------------------------------------
+
+otelcol.receiver.otlp "logs" {
+  grpc {
+    endpoint = "0.0.0.0:4319"
+  }
+  output {
+    logs = [otelcol.exporter.loki.default.input]
+  }
+}
+
+otelcol.exporter.loki "default" {
+  forward_to = [loki.write.loki.receiver]
+}

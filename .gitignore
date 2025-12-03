@@ -1,0 +1,68 @@
+# macOS / Editor junk
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+
+# Python builds & caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pycache
+*.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+.venv*/
+env/
+.env
+.env.*
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.turbo/
+.next/
+.cache/
+
+# Logs & runtime output
+*.log
+logs/
+*.pid
+
+# Local tooling / infra
+localstack/.localstack/
+localstack/data/
+postgres/data/
+redis/data/
+
+# Certificates / secrets
+config/certs/*.pem
+config/certs/*.crt
+config/certs/*.key
+
+# Platform artifacts
+langgraph.json
+*.sqlite3
+*.db
+
+# OS-specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+

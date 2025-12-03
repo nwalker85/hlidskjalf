@@ -1,0 +1,122 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ravenmaskos-default-deny
+  namespace: ravenmaskos
+  labels:
+    app.kubernetes.io/name: ravenmaskos
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow ingress from ingress controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ravenmaskos-allow-ingress
+  namespace: ravenmaskos
+  labels:
+    app.kubernetes.io/name: ravenmaskos
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ravenmaskos
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow from ingress controller namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # Allow from Prometheus for metrics scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# Allow egress to required services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ravenmaskos-allow-egress
+  namespace: ravenmaskos
+  labels:
+    app.kubernetes.io/name: ravenmaskos
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ravenmaskos
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow PostgreSQL (database namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: database
+      ports:
+        - protocol: TCP
+          port: 5432
+
+    # Allow Redis (cache namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: cache
+      ports:
+        - protocol: TCP
+          port: 6379
+
+    # Allow Kafka (messaging namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: messaging
+      ports:
+        - protocol: TCP
+          port: 9092
+
+    # Allow OpenTelemetry Collector (observability namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: observability
+      ports:
+        - protocol: TCP
+          port: 4317
+
+    # Allow external HTTPS (for AWS APIs, external services)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

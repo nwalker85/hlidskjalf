@@ -1,0 +1,108 @@
+# Monitoring & Observability Jobs
+# ================================
+
+# Post-deployment health checks
+smoke_test:
+  stage: post-deploy
+  image: curlimages/curl:latest
+  script:
+    - |
+      echo "Running smoke tests against ${CI_ENVIRONMENT_URL}"
+      
+      # Health endpoint
+      curl -sf "${CI_ENVIRONMENT_URL}/health" || exit 1
+      
+      # Readiness endpoint
+      curl -sf "${CI_ENVIRONMENT_URL}/ready" || exit 1
+      
+      echo "✅ All smoke tests passed"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: false
+
+# Performance testing
+performance_test:
+  stage: post-deploy
+  image: grafana/k6:latest
+  script:
+    - k6 run --out json=k6-results.json tests/performance/load.js
+  artifacts:
+    paths:
+      - k6-results.json
+  rules:
+    - exists:
+        - tests/performance/*.js
+  allow_failure: true
+
+# Register deployment with monitoring
+register_deployment:
+  stage: post-deploy
+  image: curlimages/curl:latest
+  script:
+    - |
+      # Register deployment annotation in Grafana
+      curl -X POST "${GRAFANA_URL}/api/annotations" \
+        -H "Authorization: Bearer ${GRAFANA_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"dashboardUID\": \"platform-overview\",
+          \"time\": $(date +%s)000,
+          \"tags\": [\"deployment\", \"${CI_PROJECT_NAME}\", \"${CI_ENVIRONMENT_NAME}\"],
+          \"text\": \"Deployed ${CI_PROJECT_NAME} v${CI_COMMIT_SHORT_SHA} to ${CI_ENVIRONMENT_NAME}\"
+        }"
+      
+      # Push deployment event to NATS
+      # (Norns will pick this up for audit)
+  allow_failure: true
+
+# Notify on deployment
+notify_slack:
+  stage: post-deploy
+  image: curlimages/curl:latest
+  script:
+    - |
+      STATUS_EMOJI="✅"
+      STATUS_COLOR="good"
+      if [ "${CI_JOB_STATUS}" != "success" ]; then
+        STATUS_EMOJI="❌"
+        STATUS_COLOR="danger"
+      fi
+      
+      curl -X POST "${SLACK_WEBHOOK_URL}" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"attachments\": [{
+            \"color\": \"${STATUS_COLOR}\",
+            \"title\": \"${STATUS_EMOJI} Deployment: ${CI_PROJECT_NAME}\",
+            \"fields\": [
+              {\"title\": \"Environment\", \"value\": \"${CI_ENVIRONMENT_NAME}\", \"short\": true},
+              {\"title\": \"Version\", \"value\": \"${CI_COMMIT_SHORT_SHA}\", \"short\": true},
+              {\"title\": \"Branch\", \"value\": \"${CI_COMMIT_REF_NAME}\", \"short\": true},
+              {\"title\": \"Author\", \"value\": \"${GITLAB_USER_NAME}\", \"short\": true}
+            ],
+            \"footer\": \"<${CI_PIPELINE_URL}|View Pipeline>\"
+          }]
+        }"
+  rules:
+    - if: $SLACK_WEBHOOK_URL
+  allow_failure: true
+
+# Create incident on failure
+create_incident:
+  stage: post-deploy
+  image: curlimages/curl:latest
+  script:
+    - |
+      # Create GitLab incident
+      curl -X POST "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/issues" \
+        -H "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"title\": \"🚨 Deployment Failed: ${CI_PROJECT_NAME} to ${CI_ENVIRONMENT_NAME}\",
+          \"description\": \"## Deployment Failure\\n\\n**Pipeline:** ${CI_PIPELINE_URL}\\n**Commit:** ${CI_COMMIT_SHA}\\n**Author:** ${GITLAB_USER_NAME}\\n\\n### Actions\\n- [ ] Investigate logs\\n- [ ] Rollback if needed\\n- [ ] Root cause analysis\",
+          \"labels\": \"incident,deployment,${CI_ENVIRONMENT_NAME}\",
+          \"issue_type\": \"incident\"
+        }"
+  when: on_failure
+  allow_failure: true
+

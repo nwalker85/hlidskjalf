@@ -1,0 +1,44 @@
+model
+  schema 1.1
+
+# User type - represents authenticated users
+type user
+
+# Organization type - top-level tenant
+type organization
+  relations
+    # Admin has full control
+    define admin: [user]
+    # Member has read access and limited write
+    define member: [user] or admin
+    # Viewer has read-only access
+    define viewer: [user] or member
+
+# API Key type - service account credentials
+type api_key
+  relations
+    define org: [organization]
+    define owner: [user]
+    # Can manage (create, revoke) - admins only
+    define can_manage: admin from org
+    # Can view - all members
+    define can_view: member from org
+
+# Audit Log type - compliance records
+type audit_log
+  relations
+    define org: [organization]
+    # Only admins can view audit logs
+    define can_view: admin from org
+
+# Project type - for future hierarchical permissions
+type project
+  relations
+    define org: [organization]
+    define owner: [user]
+    define editor: [user] or owner
+    define viewer: [user] or editor
+    # Inherit from org
+    define can_admin: admin from org
+    define can_edit: can_admin or editor
+    define can_view: can_edit or viewer or member from org

@@ -1,0 +1,66 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+.eggs
+dist
+build
+.venv
+venv
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+
+# MyPy / Ruff
+.mypy_cache
+.ruff_cache
+
+# Documentation
+docs
+*.md
+!README.md
+
+# Environment files (never include secrets in image)
+.env
+.env.*
+*.env
+
+# Infrastructure
+infra/
+*.yml
+!pyproject.toml
+
+# CI/CD
+.github
+
+# Local data
+*.db
+*.sqlite3
+data/
+logs/
+
+# macOS
+.DS_Store
+
+# Secrets
+*.pem
+*.key
+credentials.json
+secrets.json

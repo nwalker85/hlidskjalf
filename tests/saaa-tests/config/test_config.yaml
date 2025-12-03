@@ -1,0 +1,129 @@
+# SAAA Test Suite Configuration
+# =============================
+# Supports two deployment modes:
+#   - local: Direct localhost ports (default)
+#   - ravenhelm: Via ravenhelm-proxy with SSL (*.saaa.ravenhelm.test)
+#
+# Set SAAA_DEPLOYMENT_MODE=ravenhelm to use ravenhelm URLs
+
+# =============================================================================
+# LOCAL MODE - Direct localhost ports (standalone testing)
+# =============================================================================
+
+# Agent endpoints (local mode)
+agents:
+  deep_agent:
+    url: http://localhost:8209
+    timeout: 60
+  research_agent:
+    url: http://localhost:8210
+    timeout: 30
+  analysis_agent:
+    url: http://localhost:8211
+    timeout: 30
+  state_agent:
+    url: http://localhost:8212
+    timeout: 30
+
+# Voice infrastructure (local mode)
+voice:
+  livekit:
+    url: ws://localhost:7885
+    api_key: devkey
+    api_secret: secret
+  voice_worker:
+    url: http://localhost:8208
+
+# Frontend (local mode)
+frontend:
+  url: http://localhost:3005
+
+# =============================================================================
+# RAVENHELM MODE - Via ravenhelm-proxy (*.saaa.ravenhelm.test)
+# =============================================================================
+# These are used when SAAA_DEPLOYMENT_MODE=ravenhelm
+# URLs are constructed in conftest.py but documented here for reference:
+#
+# Agents:
+#   - https://deep.saaa.ravenhelm.test
+#   - https://research.saaa.ravenhelm.test
+#   - https://analysis.saaa.ravenhelm.test
+#   - https://state.saaa.ravenhelm.test
+#
+# Voice:
+#   - wss://localhost:7885 (LiveKit - TCP passthrough)
+#   - https://voice.saaa.ravenhelm.test
+#
+# Frontend:
+#   - https://frontend.saaa.ravenhelm.test
+#
+# Observability (shared services):
+#   - https://grafana.observe.ravenhelm.test
+#   - https://langfuse.observe.ravenhelm.test
+#   - https://phoenix.observe.ravenhelm.test
+
+ravenhelm:
+  agents:
+    deep_agent:
+      url: https://deep.saaa.ravenhelm.test
+    research_agent:
+      url: https://research.saaa.ravenhelm.test
+    analysis_agent:
+      url: https://analysis.saaa.ravenhelm.test
+    state_agent:
+      url: https://state.saaa.ravenhelm.test
+  voice:
+    livekit:
+      url: wss://localhost:7885
+    voice_worker:
+      url: https://voice.saaa.ravenhelm.test
+  frontend:
+    url: https://frontend.saaa.ravenhelm.test
+  observability:
+    langfuse:
+      url: https://langfuse.observe.ravenhelm.test
+    phoenix:
+      url: https://phoenix.observe.ravenhelm.test
+    grafana:
+      url: https://grafana.observe.ravenhelm.test
+
+# Latency budgets (milliseconds)
+latency:
+  voice_to_voice_total: 2000
+  agent_tool_call: 500
+  llm_first_token: 300
+  stt_transcription: 500
+  tts_first_chunk: 400
+  agent_delegation: 200
+
+# Governance settings
+governance:
+  bipa_consent_required: true
+  data_retention_days: 30
+  pii_redaction_enabled: true
+  audit_logging_required: true
+
+# Load test settings
+load_testing:
+  target_rps: 100
+  max_users: 50
+  spawn_rate: 5
+  duration_seconds: 300
+
+# DeepEval settings
+deepeval:
+  model: gpt-4o-mini  # For evaluation
+  threshold: 0.7
+
+# Tracetest settings
+tracetest:
+  endpoint: http://localhost:11633
+  polling_interval: 1
+  max_wait_seconds: 60
+
+# Playwright settings
+playwright:
+  browser: chromium
+  headless: true
+  slow_mo: 0
+  timeout: 30000

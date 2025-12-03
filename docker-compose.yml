@@ -1,0 +1,1420 @@
+services:
+  # =========================================================================
+  # NOTE: All HTTP routing is handled by Traefik (ravenhelm-proxy)
+  # The individual nginx proxies below are disabled - kept for reference
+  # =========================================================================
+
+  # nginx:  # DISABLED - Traefik handles gitlab.ravenhelm.test
+  #   image: nginx:alpine
+  #   container_name: gitlab-sre-nginx
+  #   ports:
+  #     - "11443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./config/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     gitlab:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - gitlab-network
+
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab-sre-gitlab
+    hostname: gitlab.ravenhelm.test
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /etc/gitlab/trusted-certs &&
+        cp /certs/ravenhelm-ca.crt /etc/gitlab/trusted-certs/ravenhelm-ca.crt 2>/dev/null || true &&
+        cp /certs/mkcert-ca.crt /etc/gitlab/trusted-certs/mkcert-ca.crt 2>/dev/null || true &&
+        exec /assets/init-container
+    environment:
+      GITLAB_OIDC_CLIENT_ID: ${GITLAB_OIDC_CLIENT_ID}
+      GITLAB_OIDC_CLIENT_SECRET: ${GITLAB_OIDC_CLIENT_SECRET}
+      GITLAB_OMNIBUS_CONFIG: |
+        # External URL (accessed via ravenhelm-proxy)
+        external_url 'https://gitlab.ravenhelm.test'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+
+        # Registry
+        registry_external_url 'https://registry.gitlab.ravenhelm.test'
+        gitlab_rails['registry_enabled'] = true
+        registry['enable'] = true
+        registry_nginx['listen_port'] = 5050
+        registry_nginx['listen_https'] = false
+
+        # Performance tuning for local dev
+        puma['worker_processes'] = 2
+        sidekiq['concurrency'] = 10
+        postgresql['shared_buffers'] = "256MB"
+        prometheus_monitoring['enable'] = false
+
+        # Disable unnecessary services for local dev
+        alertmanager['enable'] = false
+
+        # SSH (optional - direct port)
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+        # Time zone
+        gitlab_rails['time_zone'] = 'America/New_York'
+
+        # Zitadel SSO (OpenID Connect)
+        gitlab_rails['omniauth_enabled'] = true
+        gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
+        gitlab_rails['omniauth_block_auto_created_users'] = false
+        gitlab_rails['omniauth_auto_link_user'] = ['openid_connect']
+        gitlab_rails['omniauth_providers'] = [
+          {
+            name: "openid_connect",
+            label: "Zitadel",
+            icon: nil,
+            args: {
+              name: "openid_connect",
+              scope: ["openid", "profile", "email", "urn:zitadel:iam:org:project:roles"],
+              response_type: "code",
+              issuer: "https://zitadel.ravenhelm.test",
+              discovery: true,
+              client_auth_method: "basic",
+              uid_field: "sub",
+              pkce: true,
+              client_options: {
+                identifier: ENV["GITLAB_OIDC_CLIENT_ID"],
+                secret: ENV["GITLAB_OIDC_CLIENT_SECRET"],
+                redirect_uri: "https://gitlab.ravenhelm.test/users/auth/openid_connect/callback"
+              }
+            }
+          }
+        ]
+        
+        # Admin users (first user with admin role in Zitadel gets admin)
+        gitlab_rails['omniauth_auto_sign_in_with_provider'] = nil
+        gitlab_rails['omniauth_sync_email_from_provider'] = 'openid_connect'
+        gitlab_rails['omniauth_sync_profile_from_provider'] = ['openid_connect']
+        gitlab_rails['omniauth_sync_profile_attributes'] = ['email', 'name']
+    ports:
+      - "2222:22"  # SSH for git operations
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+      # Mount CA certificates for Zitadel OIDC verification (to /certs for init script to copy)
+      - ./ravenhelm-proxy/config/certs/ca.crt:/certs/ravenhelm-ca.crt:ro
+      - ./ravenhelm-proxy/config/certs/mkcert-ca.crt:/certs/mkcert-ca.crt:ro
+    shm_size: '256m'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # GitLab takes a while to start
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    container_name: gitlab-sre-runner
+    volumes:
+      - gitlab_runner_config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      gitlab:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # LOCALSTACK - AWS Services Emulation
+  # =========================================================================
+  localstack:
+    image: localstack/localstack:latest
+    container_name: gitlab-sre-localstack
+    ports:
+      - "4566:4566"           # LocalStack Gateway
+    environment:
+      - SERVICES=secretsmanager,ssm,s3,sqs,sns,kms,iam,sts
+      - DEBUG=0
+      - PERSISTENCE=1
+      - LOCALSTACK_HOST=localhost.localstack.cloud
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./localstack/init:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+
+  # =========================================================================
+  # OBSERVABILITY - OpenTelemetry Collector
+  # =========================================================================
+  # otel-collector:  # DISABLED - Replaced by Grafana Alloy
+  #   image: otel/opentelemetry-collector-contrib:latest
+  #   container_name: gitlab-sre-otel
+  #   command: ["--config=/etc/otel-collector-config.yaml"]
+  #   volumes:
+  #     - ./observability/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
+  #   ports:
+  #     - "4317:4317"   # OTLP gRPC
+  #     - "4318:4318"   # OTLP HTTP
+  #     - "8889:8889"   # Prometheus exporter metrics
+  #   restart: unless-stopped
+  #   networks:
+  #     - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - Prometheus (Metrics)
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gitlab-sre-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - Loki (Logs)
+  # =========================================================================
+  loki:
+    image: grafana/loki:latest
+    container_name: gitlab-sre-loki
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - Alloy (Unified Log/Metric/Trace Collector)
+  # =========================================================================
+  alloy:
+    image: grafana/alloy:latest
+    container_name: gitlab-sre-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy_data:/var/lib/alloy/data
+    ports:
+      - "12345:12345"  # Alloy UI
+      - "4317:4317"    # OTLP gRPC (traces)
+      - "4318:4318"    # OTLP HTTP (traces)
+      - "4319:4319"    # OTLP gRPC (logs)
+    depends_on:
+      - loki
+      - tempo
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - Tempo (Traces)
+  # =========================================================================
+  tempo:
+    image: grafana/tempo:latest
+    container_name: gitlab-sre-tempo
+    user: "0"  # Run as root to avoid permission issues
+    command: ["-config.file=/etc/tempo/tempo-config.yaml"]
+    volumes:
+      - ./observability/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo API
+      - "9095:9095"   # Tempo gRPC
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - Grafana (Dashboards)
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gitlab-sre-grafana
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=ravenhelm
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://grafana.observe.ravenhelm.test
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor tempoSearch tempoBackendSearch
+      # Zitadel SSO with role-based access
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+      - GF_AUTH_GENERIC_OAUTH_NAME=Zitadel
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID=${GRAFANA_OIDC_CLIENT_ID}
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${GRAFANA_OIDC_CLIENT_SECRET}
+      # Include role scope for Zitadel project roles
+      - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email urn:zitadel:iam:org:project:roles
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.test/oauth/v2/authorize
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.test/oauth/v2/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.test/oidc/v1/userinfo
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
+      # Role mapping from Zitadel project roles
+      # Zitadel returns roles as: {"urn:zitadel:iam:org:project:roles": {"admin": {"349394492048015386": "Ravenhelm Platform"}}}
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'admin') && 'Admin' || contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'operator') && 'Editor' || 'Viewer'
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true
+      # Auto-create Ravenhelm org
+      - GF_USERS_AUTO_ASSIGN_ORG=true
+      - GF_USERS_AUTO_ASSIGN_ORG_ID=1
+      - GF_AUTH_GENERIC_OAUTH_ORG_ATTRIBUTE_PATH=
+      - GF_AUTH_GENERIC_OAUTH_ORG_MAPPING=
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - Alertmanager
+  # =========================================================================
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: gitlab-sre-alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # OBSERVABILITY - nginx for observe.ravenhelm.test
+  # DISABLED - Traefik handles *.observe.ravenhelm.test
+  # =========================================================================
+  # observe-nginx:
+  #   image: nginx:alpine
+  #   container_name: gitlab-sre-observe-nginx
+  #   ports:
+  #     - "12443:443"
+  #   volumes:
+  #     - ./observability/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./config/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     - grafana
+  #     - prometheus
+  #   restart: unless-stopped
+  #   networks:
+  #     - gitlab-network
+
+  # =========================================================================
+  # EVENT PLANE - Redpanda (Kafka-compatible)
+  # =========================================================================
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: gitlab-sre-redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=warn
+    ports:
+      - "18081:18081"  # Schema Registry
+      - "18082:18082"  # Pandaproxy (REST)
+      - "19092:19092"  # Kafka API
+      - "19644:9644"   # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # EVENT PLANE - Redpanda Console (UI)
+  # =========================================================================
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: gitlab-sre-redpanda-console
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    environment:
+      - KAFKA_BROKERS=redpanda:9092
+      - KAFKA_SCHEMAREGISTRY_ENABLED=true
+      - KAFKA_SCHEMAREGISTRY_URLS=http://redpanda:8081
+      - REDPANDA_ADMINAPI_ENABLED=true
+      - REDPANDA_ADMINAPI_URLS=http://redpanda:9644
+      # Zitadel SSO
+      - LOGIN_OIDC_ENABLED=true
+      - LOGIN_OIDC_CLIENTID=${REDPANDA_OIDC_CLIENT_ID}
+      - LOGIN_OIDC_CLIENTSECRET=${REDPANDA_OIDC_CLIENT_SECRET}
+      - LOGIN_OIDC_ISSUERURL=https://zitadel.ravenhelm.test
+      - LOGIN_OIDC_DISPLAYNAME=Zitadel
+    ports:
+      - "8088:8080"  # Changed from 8080 to avoid conflict with Zitadel
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # EVENT PLANE - nginx for events.ravenhelm.test
+  # DISABLED - Traefik handles events.ravenhelm.test
+  # =========================================================================
+  # events-nginx:
+  #   image: nginx:alpine
+  #   container_name: gitlab-sre-events-nginx
+  #   ports:
+  #     - "13443:443"
+  #   volumes:
+  #     - ./redpanda/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./config/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     - redpanda-console
+  #   restart: unless-stopped
+  #   networks:
+  #     - gitlab-network
+
+  # =========================================================================
+  # ZERO TRUST - SPIRE Server (Workload Identity)
+  # =========================================================================
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.0
+    container_name: gitlab-sre-spire-server
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    volumes:
+      - ./spire/server:/opt/spire/conf/server:ro
+      - spire_server_data:/opt/spire/data
+      - spire_server_run:/tmp/spire-server/private
+    ports:
+      - "8081:8081"  # SPIRE Server API
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # ZERO TRUST - SPIRE Agent (Workload Attestation)
+  # =========================================================================
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.9.0
+    container_name: gitlab-sre-spire-agent
+    command: 
+      - "-config"
+      - "/opt/spire/conf/agent/agent.conf"
+      - "-joinToken"
+      - "${SPIRE_JOIN_TOKEN:-}"
+    volumes:
+      - ./spire/agent:/opt/spire/conf/agent:ro
+      - spire_agent_data:/opt/spire/data
+      - spire_server_run:/tmp/spire-server/private:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # For Docker workload attestation
+      # Expose agent socket for spiffe-helper sidecars
+      - spire_agent_socket:/tmp/spire-agent/public
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    pid: "host"  # Required for process attestation
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # HLIÐSKJÁLF - Odin's High Seat (Control Plane)
+  # From here, observe all Nine Realms
+  # =========================================================================
+  hlidskjalf:
+    build:
+      context: ./hlidskjalf
+      dockerfile: Dockerfile
+    container_name: gitlab-sre-hlidskjalf
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=api"
+      - "ravenhelm.workload=control-plane"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/hlidskjalf
+      - REDIS_URL=rediss://:ravenhelm-redis-dev-password@redis:6379/2?ssl_cert_reqs=none
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SPIRE_AGENT_SOCKET=/tmp/spire-agent/public/api.sock
+      - TRUST_DOMAIN=ravenhelm.local
+      # The Norns - AI Agent
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - NORNS_MODEL=gpt-4o
+      - LANGFUSE_HOST=http://langfuse-server:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+    volumes:
+      - ./hlidskjalf/src:/app/src:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8900:8900"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8900/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  hlidskjalf-ui:
+    build:
+      context: ./hlidskjalf/ui
+      dockerfile: Dockerfile
+    container_name: gitlab-sre-hlidskjalf-ui
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=ui"
+      - "ravenhelm.workload=control-plane"
+    environment:
+      - NEXT_PUBLIC_API_URL=https://hlidskjalf-api.ravenhelm.test
+      - NEXT_PUBLIC_LANGGRAPH_API_URL=https://norns.ravenhelm.test
+      - NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID=norns
+      # Internal Docker URL for server-side API calls
+      - LANGGRAPH_API_URL=http://langgraph:2024
+      # NextAuth Zitadel SSO (Server-side OIDC)
+      - AUTH_ZITADEL_ISSUER=https://zitadel.ravenhelm.test
+      - AUTH_ZITADEL_CLIENT_ID=${NEXTAUTH_HLIDSKJALF_CLIENT_ID}
+      - AUTH_ZITADEL_CLIENT_SECRET=${NEXTAUTH_HLIDSKJALF_CLIENT_SECRET}
+      - NEXTAUTH_URL=https://hlidskjalf.ravenhelm.test
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - AUTH_TRUST_HOST=true
+      # Trust self-signed certs in dev (required for Zitadel SSO)
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "3900:3900"
+    depends_on:
+      - hlidskjalf
+      - langgraph
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # SHARED DATABASE - PostgreSQL + pgvector (Muninn's canonical truth)
+  # mTLS enabled via SPIRE SVIDs
+  # =========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gitlab-sre-postgres
+    user: "1001:1001"  # ravenhelm platform user
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=postgres"
+      - "ravenhelm.workload=postgres"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "ssl=on"
+      - "-c"
+      - "ssl_cert_file=/run/spire/certs/svid.pem"
+      - "-c"
+      - "ssl_key_file=/run/spire/certs/key.pem"
+      - "-c"
+      - "ssl_ca_file=/run/spire/certs/bundle.pem"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      # SPIRE certificates (owned by ravenhelm:1001:1001)
+      - postgres_certs:/run/spire/certs:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres-spiffe-helper:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # Sidecar: SPIFFE Helper for PostgreSQL certificates
+  postgres-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-postgres-spiffe-helper
+    user: "1001:1001"  # ravenhelm platform user for consistent ownership
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=postgres"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"  # Required for SPIRE workload attestation
+    volumes:
+      - ./config/spiffe-helper/postgres-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - postgres_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # HUGINN'S WIND - NATS JetStream (fast, low-latency state transport)
+  # mTLS enabled via SPIRE SVIDs
+  # =========================================================================
+  nats:
+    image: nats:latest
+    container_name: gitlab-sre-nats
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=nats"
+      - "ravenhelm.workload=nats"
+    command: 
+      - "--config=/etc/nats/nats-server.conf"
+    ports:
+      - "4222:4222"   # Client connections (TLS)
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - nats_data:/data
+      - ./config/nats:/etc/nats:ro
+      # SPIRE certificates (populated by spiffe-helper sidecar)
+      - nats_certs:/run/spire/certs:ro
+    # NATS minimal image has no shell/wget - rely on restart policy
+    # External healthcheck via http://localhost:8222/healthz
+    healthcheck:
+      test: ["NONE"]
+    depends_on:
+      nats-spiffe-helper:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # Sidecar: SPIFFE Helper for NATS certificates
+  nats-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-nats-spiffe-helper
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=nats"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"  # Required for SPIRE workload attestation
+    volumes:
+      - ./config/spiffe-helper/nats-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - nats_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # SHARED CACHE - Redis for platform services
+  # mTLS enabled via SPIRE SVIDs
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: gitlab-sre-redis
+    user: "1001:1001"  # ravenhelm platform user
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=redis"
+      - "ravenhelm.workload=redis"
+    command: redis-server /etc/redis/redis.conf
+    volumes:
+      - redis_data:/data
+      - ./config/redis:/etc/redis:ro
+      # SPIRE certificates (owned by ravenhelm:1001:1001)
+      - redis_certs:/run/spire/certs:ro
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/run/spire/certs/bundle.pem", "-a", "ravenhelm-redis-dev-password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      redis-spiffe-helper:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # Sidecar: SPIFFE Helper for Redis certificates
+  redis-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-redis-spiffe-helper
+    user: "1001:1001"  # ravenhelm platform user for consistent ownership
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=redis"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"  # Required for SPIRE workload attestation
+    volumes:
+      - ./config/spiffe-helper/redis-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - redis_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # LLM OBSERVABILITY - LangFuse (LangGraph/LangChain tracing)
+  # =========================================================================
+  langfuse:
+    image: langfuse/langfuse:2  # v3 requires ClickHouse
+    container_name: gitlab-sre-langfuse
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
+      - NEXTAUTH_SECRET=ravenhelm-langfuse-secret-change-in-prod
+      - NEXTAUTH_URL=https://langfuse.observe.ravenhelm.test
+      - SALT=ravenhelm-salt-change-in-prod
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - TELEMETRY_ENABLED=false
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=true
+      # Zitadel SSO
+      - AUTH_CUSTOM_CLIENT_ID=${LANGFUSE_OIDC_CLIENT_ID}
+      - AUTH_CUSTOM_CLIENT_SECRET=${LANGFUSE_OIDC_CLIENT_SECRET}
+      - AUTH_CUSTOM_ISSUER=https://zitadel.ravenhelm.test
+      - AUTH_CUSTOM_NAME=Zitadel
+      - AUTH_DISABLE_USERNAME_PASSWORD=false
+      # Trust self-signed certs in dev (required for Zitadel SSO)
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+    ports:
+      - "3001:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # LLM OBSERVABILITY - Phoenix (Arize) for embeddings & RAG debugging
+  # =========================================================================
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: gitlab-sre-phoenix
+    environment:
+      - PHOENIX_WORKING_DIR=/data
+    volumes:
+      - phoenix_data:/data
+    ports:
+      - "6006:6006"
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # SECRETS - OpenBao (Vault fork)
+  # =========================================================================
+  openbao:
+    image: quay.io/openbao/openbao:latest
+    container_name: gitlab-sre-openbao
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        chown -R openbao:openbao /openbao/data
+        exec su-exec openbao bao server -config=/openbao/config
+    user: "0"
+    cap_add:
+      - IPC_LOCK
+    environment:
+      - BAO_ADDR=http://0.0.0.0:8200
+      - BAO_API_ADDR=http://0.0.0.0:8200
+    volumes:
+      - ./openbao/config:/openbao/config:ro
+      - openbao_data:/openbao/data
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # IDENTITY - Zitadel (SSO / OAuth 2.1 / OIDC)
+  # =========================================================================
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v2.62.1  # Last v2 stable with v1 login
+    container_name: gitlab-sre-zitadel
+    user: "1001:1001"  # ravenhelm platform user
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=zitadel"
+      - "ravenhelm.workload=zitadel"
+    command: start-from-init --masterkeyFromEnv --tlsMode external
+    environment:
+      # Master key for encryption (exactly 32 bytes)
+      ZITADEL_MASTERKEY: "RavenH3lmSecur3K3yForZ1t4d3l1234"
+      # Database
+      ZITADEL_DATABASE_POSTGRES_HOST: postgres
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: postgres
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # External domain - standard HTTPS via Traefik ingress
+      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.test
+      ZITADEL_EXTERNALPORT: 443
+      ZITADEL_EXTERNALSECURE: "true"
+      # First instance setup
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: Ravenhelm
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: admin
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: "RavenAdmin123!"
+      # Console app redirect URIs
+      ZITADEL_CONSOLEPOSTLOGOUTREDIRECTURI: "https://zitadel.ravenhelm.test/ui/console"
+      ZITADEL_CONSOLEREDIRECTURI: "https://zitadel.ravenhelm.test/ui/console/auth/callback"
+      # Logging
+      ZITADEL_LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Healthcheck disabled - Zitadel distroless image has no shell
+    # Use /debug/ready externally to verify
+    healthcheck:
+      test: ["NONE"]
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # ZERO-TRUST - OAuth2-Proxy (Forward Auth for Traefik)
+  # =========================================================================
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: gitlab-sre-oauth2-proxy
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=oauth2-proxy"
+      - "ravenhelm.workload=auth"
+    environment:
+      # Zitadel OIDC Configuration
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.test
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_CLIENT_SECRET}
+      # Cookie settings
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.ravenhelm.test
+      - OAUTH2_PROXY_COOKIE_NAME=_ravenhelm_auth
+      # Proxy settings
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
+      - OAUTH2_PROXY_REDIRECT_URL=https://auth.ravenhelm.test/oauth2/callback
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=.ravenhelm.test
+      # Auth settings
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_SCOPE=openid profile email
+      - OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+      - OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      # Reverse proxy mode for Traefik
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REAL_CLIENT_IP_HEADER=X-Forwarded-For
+      # Skip TLS verification for self-signed certs (dev only)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+      # Skip auth for specific paths
+      - OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/health$|^/ready$|^/metrics$|^/api/health$
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "4180:4180"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4180/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # Nginx proxy for zitadel.ravenhelm.test
+  # DISABLED - Traefik handles zitadel.ravenhelm.test
+  # zitadel-nginx:
+  #   image: nginx:alpine
+  #   container_name: gitlab-sre-zitadel-nginx
+  #   ports:
+  #     - "15443:443"
+  #   volumes:
+  #     - ./zitadel/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./config/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     - zitadel
+  #   restart: unless-stopped
+  #   networks:
+  #     - gitlab-network
+
+  # =========================================================================
+  # SECRETS - nginx for vault.ravenhelm.test
+  # DISABLED - Traefik handles vault.ravenhelm.test
+  # =========================================================================
+  # vault-nginx:
+  #   image: nginx:alpine
+  #   container_name: gitlab-sre-vault-nginx
+  #   ports:
+  #     - "14443:443"
+  #   volumes:
+  #     - ./openbao/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./config/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     - openbao
+  #   restart: unless-stopped
+  #   networks:
+  #     - gitlab-network
+
+  # =========================================================================
+  # AUTOMATION - n8n (Workflow Automation)
+  # =========================================================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: gitlab-sre-n8n
+    environment:
+      - N8N_HOST=n8n.ravenhelm.test
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://n8n.ravenhelm.test/
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=postgres
+      - DB_POSTGRESDB_PASSWORD=postgres
+      - N8N_ENCRYPTION_KEY=ravenhelm-n8n-encryption-key
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+    volumes:
+      - n8n_data:/home/node/.n8n
+    ports:
+      - "5678:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # ╔═══════════════════════════════════════════════════════════════════════╗
+  # ║                 RAG PIPELINE — Muninn's Knowledge Engine              ║
+  # ╚═══════════════════════════════════════════════════════════════════════╝
+  # =========================================================================
+
+  # =========================================================================
+  # VECTOR DB - Weaviate (Hybrid Search, BM25 + Vector)
+  # =========================================================================
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:latest
+    container_name: gitlab-sre-weaviate
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8084'
+      - --scheme
+      - http
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      ENABLE_MODULES: 'text2vec-transformers,reranker-transformers'
+      TRANSFORMERS_INFERENCE_API: 'http://embeddings:8085'
+      RERANKER_INFERENCE_API: 'http://reranker:8086'
+      CLUSTER_HOSTNAME: 'weaviate'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    ports:
+      - "8084:8084"  # Weaviate API
+    depends_on:
+      - embeddings
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # EMBEDDINGS - Sentence Transformers via HuggingFace TEI
+  # https://huggingface.co/sentence-transformers
+  # =========================================================================
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: gitlab-sre-embeddings
+    command:
+      - --model-id
+      - sentence-transformers/all-MiniLM-L6-v2
+      - --port
+      - '8085'
+    volumes:
+      - embeddings_cache:/data
+    ports:
+      - "8085:8085"  # TEI Embeddings API
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Model download can take time
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # RERANKER - Cross-Encoder for result reranking
+  # =========================================================================
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: gitlab-sre-reranker
+    command:
+      - --model-id
+      - BAAI/bge-reranker-base
+      - --port
+      - '8086'
+    volumes:
+      - reranker_cache:/data
+    ports:
+      - "8086:8086"  # Reranker API
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # DOCLING - Document Processing (IBM Research)
+  # Parses PDF, DOCX, PPTX, HTML into structured markdown
+  # =========================================================================
+  docling:
+    image: ds4sd/docling-serve:latest
+    container_name: gitlab-sre-docling
+    ports:
+      - "8087:5000"  # Docling API
+    volumes:
+      - docling_cache:/root/.cache
+    environment:
+      - DOCLING_CACHE_DIR=/root/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # ╔═══════════════════════════════════════════════════════════════════════╗
+  # ║            GRAPH DATABASES — The Roots of Yggdrasil                   ║
+  # ╚═══════════════════════════════════════════════════════════════════════╝
+  # =========================================================================
+
+  # =========================================================================
+  # GRAPH DB - Memgraph (In-memory, Cypher-compatible)
+  # =========================================================================
+  memgraph:
+    image: memgraph/memgraph-platform:latest
+    container_name: gitlab-sre-memgraph
+    ports:
+      - "7687:7687"   # Bolt protocol
+      - "7444:7444"   # Memgraph Lab
+      - "3010:3000"   # Memgraph Lab UI
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+      - memgraph_log:/var/log/memgraph
+    environment:
+      - MEMGRAPH_USER=memgraph
+      - MEMGRAPH_PASSWORD=ravenhelm
+    healthcheck:
+      test: ["CMD", "echo", "RETURN 1;", "|", "mgconsole", "--host", "127.0.0.1", "--port", "7687"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # GRAPH DB - Neo4j (Enterprise-grade, APOC/GDS plugins)
+  # =========================================================================
+  neo4j:
+    image: neo4j:5-community
+    container_name: gitlab-sre-neo4j
+    ports:
+      - "7475:7474"   # HTTP (browser) - offset to avoid memgraph conflict
+      - "7688:7687"   # Bolt protocol - offset to avoid memgraph conflict
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    environment:
+      - NEO4J_AUTH=neo4j/ravenhelm
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=1G
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # ╔═══════════════════════════════════════════════════════════════════════╗
+  # ║              VOICE & REAL-TIME — The Skalds' Domain                   ║
+  # ╚═══════════════════════════════════════════════════════════════════════╝
+  # =========================================================================
+
+  # =========================================================================
+  # LIVEKIT - WebRTC Server (Voice Agent Infrastructure)
+  # =========================================================================
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: gitlab-sre-livekit
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=livekit"
+      - "ravenhelm.workload=voice"
+    command:
+      - --config=/etc/livekit.yaml
+      - --dev
+    ports:
+      - "7880:7880"     # HTTP/WebSocket
+      - "7881:7881"     # RTC/UDP
+      - "7882:7882/udp" # RTC/UDP
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_KEYS:-devkey:secret}"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7880"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+  # =========================================================================
+  # LANGGRAPH - Norns Agent Server
+  # =========================================================================
+  # =========================================================================
+  # OLLAMA - Local LLM Server (Huginn's Voice)
+  # =========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gitlab-sre-ollama
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=ollama"
+      - "ravenhelm.workload=ai-local"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*  # Allow all origins for Traefik proxy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # =========================================================================
+  # HuggingFace Text Generation Inference (TGI)
+  # For running specific HuggingFace models locally
+  # =========================================================================
+  
+  # Main reasoning model - Ministral 14B
+  # Requires ~24GB VRAM/RAM - use quantized for less
+  hf-reasoning:
+    image: ghcr.io/huggingface/text-generation-inference:latest
+    container_name: gitlab-sre-hf-reasoning
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=hf-reasoning"
+      - "ravenhelm.workload=ai-local"
+    ports:
+      - "8180:80"
+    volumes:
+      - hf_models:/data
+    environment:
+      - MODEL_ID=mistralai/Ministral-3B-Instruct-2412
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - MAX_INPUT_LENGTH=8192
+      - MAX_TOTAL_TOKENS=16384
+      - QUANTIZE=bitsandbytes-nf4
+      # Use smaller model first for testing - switch to 14B when ready:
+      # - MODEL_ID=mistralai/Ministral-3-14B-Instruct-2412
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # Models take time to load
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+    profiles:
+      - huggingface  # Only start with: docker compose --profile huggingface up
+    # Uncomment for GPU support (recommended for 14B):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # Specialized agents model - Ministral 3B (lighter, faster)
+  hf-agents:
+    image: ghcr.io/huggingface/text-generation-inference:latest
+    container_name: gitlab-sre-hf-agents
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=hf-agents"
+      - "ravenhelm.workload=ai-local"
+    ports:
+      - "8181:80"
+    volumes:
+      - hf_models:/data
+    environment:
+      - MODEL_ID=mistralai/Ministral-3B-Instruct-2412
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - MAX_INPUT_LENGTH=4096
+      - MAX_TOTAL_TOKENS=8192
+      - QUANTIZE=bitsandbytes-nf4
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+    profiles:
+      - huggingface  # Only start with: docker compose --profile huggingface up
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  langgraph:
+    build:
+      context: ./hlidskjalf
+      dockerfile: Dockerfile.langgraph
+    container_name: gitlab-sre-langgraph
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=langgraph"
+      - "ravenhelm.workload=ai-agent"
+    ports:
+      - "2024:2024"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Access LM Studio on host
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
+      - REDIS_URL=rediss://:ravenhelm-redis-dev-password@redis:6379?ssl_cert_reqs=none
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/hlidskjalf
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=ravenhelm
+      - NATS_URL=nats://nats:4222
+      - KAFKA_BOOTSTRAP=redpanda:9092
+      # LLM Provider: 'ollama', 'lmstudio', 'openai'
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - LMSTUDIO_URL=http://host.docker.internal:1234/v1
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-ministral-3-14b-reasoning}
+    volumes:
+      # Mount the ENTIRE project root for workspace access
+      - .:/app
+      # Full project is now mounted at /app
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2024/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - gitlab-network
+
+volumes:
+  gitlab_config:
+  gitlab_logs:
+  gitlab_data:
+  gitlab_runner_config:
+  localstack_data:
+  ollama_data:
+  hf_models:  # Shared HuggingFace model cache
+  spire_server_data:
+  spire_server_run:
+  spire_agent_data:
+  spire_agent_socket:  # Shared socket for spiffe-helper sidecars
+  postgres_data:
+  postgres_certs:  # SPIRE certificates for PostgreSQL
+  redis_data:
+  redis_certs:  # SPIRE certificates for Redis
+  nats_data:
+  nats_certs:  # SPIRE certificates for NATS
+  prometheus_data:
+  loki_data:
+  alloy_data:
+  tempo_data:
+  grafana_data:
+  alertmanager_data:
+  redpanda_data:
+  openbao_data:
+  phoenix_data:
+  n8n_data:
+  weaviate_data:
+  embeddings_cache:
+  reranker_cache:
+  docling_cache:
+  memgraph_data:
+  memgraph_log:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_plugins:
+
+networks:
+  gitlab-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.88.0.0/16

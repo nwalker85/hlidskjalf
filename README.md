@@ -115,6 +115,30 @@ A system with **both** is *cognitive*.
 - Zitadel SSO & OAuth runbook: [`docs/runbooks/RUNBOOK-006-zitadel-sso.md`](docs/runbooks/RUNBOOK-006-zitadel-sso.md)
 - GitLab permission sync architecture: [`docs/architecture/ZITADEL_GITLAB_PERMISSION_SYNC.md`](docs/architecture/ZITADEL_GITLAB_PERMISSION_SYNC.md)
 
+### Permission Sync Agent
+Synchronize Zitadel project roles with GitLab group permissions:
+
+```bash
+export PERM_SYNC_ZITADEL_PROJECT_ID=<zitadel_project_id>
+export PERM_SYNC_ZITADEL_TOKEN=<svc_token>        # or PERM_SYNC_ZITADEL_SECRET for SecretsMgr
+export PERM_SYNC_GITLAB_TOKEN=<gitlab_pat>        # or PERM_SYNC_GITLAB_SECRET
+export PERM_SYNC_GITLAB_GROUP_ID=3                # ravenhelm group
+
+python -m services.permission_sync --run-once --dry-run
+# remove --dry-run after verifying output
+```
+
+Run continuously (cron/job) with:
+```bash
+python -m services.permission_sync
+```
+
+Configuration:
+- Mapping file: `config/permission-sync/mapping.yaml`
+- State file (managed members): `data/permission-sync-state.json`
+- Environment overrides: `PERM_SYNC_*` variables (see `services/permission_sync/config.py`)
+- Secrets can be pulled from LocalStack/AWS Secrets Manager via `PERM_SYNC_ZITADEL_SECRET` / `PERM_SYNC_GITLAB_SECRET`.
+
 ---
 
 ## Quick Start

@@ -1,0 +1,138 @@
+# Ravenhelm Platform - Base Configuration
+# ========================================
+# Shared networks and volumes used across all compose stacks
+# Reference this file in all modular compose files
+
+networks:
+  platform_net:
+    external: true
+    name: platform_net
+
+volumes:
+  # GitLab
+  gitlab_config:
+    external: true
+    name: hlidskjalf_gitlab_config
+  gitlab_logs:
+    external: true
+    name: hlidskjalf_gitlab_logs
+  gitlab_data:
+    external: true
+    name: hlidskjalf_gitlab_data
+  gitlab_runner_config:
+    external: true
+    name: hlidskjalf_gitlab_runner_config
+  
+  # Infrastructure
+  localstack_data:
+    external: true
+    name: hlidskjalf_localstack_data
+  postgres_data:
+    external: true
+    name: hlidskjalf_postgres_data
+  redis_data:
+    external: true
+    name: hlidskjalf_redis_data
+  nats_data:
+    external: true
+    name: hlidskjalf_nats_data
+  openbao_data:
+    external: true
+    name: hlidskjalf_openbao_data
+  
+  # SPIRE
+  spire_server_data:
+    external: true
+    name: hlidskjalf_spire_server_data
+  spire_server_run:
+    external: true
+    name: hlidskjalf_spire_server_run
+  spire_agent_data:
+    external: true
+    name: hlidskjalf_spire_agent_data
+  spire_agent_socket:
+    external: true
+    name: hlidskjalf_spire_agent_socket
+  
+  # SPIRE Certificates (per-service)
+  postgres_certs:
+    external: true
+    name: hlidskjalf_postgres_certs
+  redis_certs:
+    external: true
+    name: hlidskjalf_redis_certs
+  nats_certs:
+    external: true
+    name: hlidskjalf_nats_certs
+  mcp_gitlab_certs:
+    external: true
+    name: hlidskjalf_mcp_gitlab_certs
+  
+  # Observability
+  prometheus_data:
+    external: true
+    name: hlidskjalf_prometheus_data
+  loki_data:
+    external: true
+    name: hlidskjalf_loki_data
+  alloy_data:
+    external: true
+    name: hlidskjalf_alloy_data
+  tempo_data:
+    external: true
+    name: hlidskjalf_tempo_data
+  grafana_data:
+    external: true
+    name: hlidskjalf_grafana_data
+  alertmanager_data:
+    external: true
+    name: hlidskjalf_alertmanager_data
+  phoenix_data:
+    external: true
+    name: hlidskjalf_phoenix_data
+  
+  # Events
+  redpanda_data:
+    external: true
+    name: hlidskjalf_redpanda_data
+  
+  # AI Infrastructure
+  ollama_data:
+    external: true
+    name: hlidskjalf_ollama_data
+  hf_models:
+    external: true
+    name: hlidskjalf_hf_models
+  weaviate_data:
+    external: true
+    name: hlidskjalf_weaviate_data
+  embeddings_cache:
+    external: true
+    name: hlidskjalf_embeddings_cache
+  reranker_cache:
+    external: true
+    name: hlidskjalf_reranker_cache
+  docling_cache:
+    external: true
+    name: hlidskjalf_docling_cache
+  memgraph_data:
+    external: true
+    name: hlidskjalf_memgraph_data
+  memgraph_log:
+    external: true
+    name: hlidskjalf_memgraph_log
+  neo4j_data:
+    external: true
+    name: hlidskjalf_neo4j_data
+  neo4j_logs:
+    external: true
+    name: hlidskjalf_neo4j_logs
+  neo4j_plugins:
+    external: true
+    name: hlidskjalf_neo4j_plugins
+  
+  # Integrations
+  n8n_data:
+    external: true
+    name: hlidskjalf_n8n_data
+

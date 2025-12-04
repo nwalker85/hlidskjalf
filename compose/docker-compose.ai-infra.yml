@@ -1,0 +1,273 @@
+# Ravenhelm Platform - AI Infrastructure Stack
+# =============================================
+# LLMs, embeddings, vector databases, and knowledge graphs
+#
+# Services: ollama, hf-reasoning, hf-agents, weaviate, embeddings, reranker, docling, memgraph, neo4j
+# Dependencies: None (self-contained AI stack)
+#
+# Start: docker compose -f compose/docker-compose.ai-infra.yml up -d
+# With profiles: docker compose -f compose/docker-compose.ai-infra.yml --profile docling --profile huggingface up -d
+
+include:
+  - docker-compose.base.yml
+
+services:
+  # =========================================================================
+  # LOCAL LLM - Ollama (llama3.1, nomic-embed-text)
+  # =========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gitlab-sre-ollama
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=ollama"
+      - "ravenhelm.workload=ai-local"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*  # Allow all origins for Traefik proxy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # HuggingFace Text Generation Inference (TGI)
+  # =========================================================================
+  
+  # Main reasoning model - Ministral 3B
+  hf-reasoning:
+    image: ghcr.io/huggingface/text-generation-inference:latest
+    container_name: gitlab-sre-hf-reasoning
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=hf-reasoning"
+      - "ravenhelm.workload=ai-local"
+    ports:
+      - "8180:80"
+    volumes:
+      - hf_models:/data
+    environment:
+      - MODEL_ID=mistralai/Ministral-3B-Instruct-2412
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - MAX_INPUT_LENGTH=8192
+      - MAX_TOTAL_TOKENS=16384
+      - QUANTIZE=bitsandbytes-nf4
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # Models take time to load
+    restart: unless-stopped
+    networks:
+      - platform_net
+    profiles:
+      - huggingface  # Only start with: docker compose --profile huggingface up
+
+  # Specialized agents model - Ministral 3B (lighter, faster)
+  hf-agents:
+    image: ghcr.io/huggingface/text-generation-inference:latest
+    container_name: gitlab-sre-hf-agents
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=hf-agents"
+      - "ravenhelm.workload=ai-local"
+    ports:
+      - "8181:80"
+    volumes:
+      - hf_models:/data
+    environment:
+      - MODEL_ID=mistralai/Ministral-3B-Instruct-2412
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - MAX_INPUT_LENGTH=4096
+      - MAX_TOTAL_TOKENS=8192
+      - QUANTIZE=bitsandbytes-nf4
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    restart: unless-stopped
+    networks:
+      - platform_net
+    profiles:
+      - huggingface  # Only start with: docker compose --profile huggingface up
+
+  # =========================================================================
+  # RAG PIPELINE - Vector Database & Embeddings
+  # =========================================================================
+  
+  # Vector Database - Weaviate
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:latest
+    container_name: gitlab-sre-weaviate
+    profiles:
+      - docling
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8084'
+      - --scheme
+      - http
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      DEFAULT_VECTORIZER_MODULE: 'none'
+      ENABLE_MODULES: 'text2vec-transformers,reranker-transformers'
+      TRANSFORMERS_INFERENCE_API: 'http://embeddings:8085'
+      RERANKER_INFERENCE_API: 'http://reranker:8086'
+      CLUSTER_HOSTNAME: 'weaviate'
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    ports:
+      - "8084:8084"  # Weaviate API
+    depends_on:
+      - embeddings
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Embeddings - Sentence Transformers
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: gitlab-sre-embeddings
+    profiles:
+      - docling
+    command:
+      - --model-id
+      - sentence-transformers/all-MiniLM-L6-v2
+      - --port
+      - '8085'
+    volumes:
+      - embeddings_cache:/data
+    ports:
+      - "8085:8085"  # TEI Embeddings API
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Model download can take time
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Reranker - Cross-Encoder
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: gitlab-sre-reranker
+    profiles:
+      - docling
+    command:
+      - --model-id
+      - BAAI/bge-reranker-base
+      - --port
+      - '8086'
+    volumes:
+      - reranker_cache:/data
+    ports:
+      - "8086:8086"  # Reranker API
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Document Processing - Docling
+  docling:
+    image: ds4sd/docling-serve:latest
+    container_name: gitlab-sre-docling
+    profiles:
+      - docling
+    ports:
+      - "8087:5000"  # Docling API
+    volumes:
+      - docling_cache:/root/.cache
+    environment:
+      - DOCLING_CACHE_DIR=/root/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # GRAPH DATABASES - Knowledge Graphs
+  # =========================================================================
+  
+  # Memgraph - In-memory, Cypher-compatible
+  memgraph:
+    image: memgraph/memgraph-platform:latest
+    container_name: gitlab-sre-memgraph
+    ports:
+      - "7687:7687"   # Bolt protocol
+      - "7444:7444"   # Memgraph Lab
+      - "3010:3000"   # Memgraph Lab UI
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+      - memgraph_log:/var/log/memgraph
+    environment:
+      - MEMGRAPH_USER=memgraph
+      - MEMGRAPH_PASSWORD=ravenhelm
+    healthcheck:
+      test: ["CMD", "echo", "RETURN 1;", "|", "mgconsole", "--host", "127.0.0.1", "--port", "7687"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Neo4j - Enterprise-grade with APOC
+  neo4j:
+    image: neo4j:5-community
+    container_name: gitlab-sre-neo4j
+    ports:
+      - "7475:7474"   # HTTP (browser) - offset to avoid memgraph conflict
+      - "7688:7687"   # Bolt protocol - offset to avoid memgraph conflict
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    environment:
+      - NEO4J_AUTH=neo4j/ravenhelm
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=1G
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - platform_net
+

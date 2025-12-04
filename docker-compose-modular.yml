@@ -1,0 +1,24 @@
+# Ravenhelm Platform - Modular Compose Wrapper
+# ==============================================
+# This file includes all modular compose stacks for backwards compatibility
+# 
+# Usage:
+#   docker compose -f docker-compose-modular.yml up -d        # Start all
+#   docker compose -f docker-compose-modular.yml down         # Stop all
+#   docker compose -f docker-compose-modular.yml ps           # List all
+#
+# For selective stack management, use individual files:
+#   ./scripts/start-dev.sh                                    # Minimal dev
+#   ./scripts/start-platform.sh                               # Full platform
+#   docker compose -f compose/docker-compose.langgraph.yml up -d  # Just LangGraph
+
+include:
+  - compose/docker-compose.infrastructure.yml
+  - compose/docker-compose.security.yml
+  - compose/docker-compose.observability.yml
+  - compose/docker-compose.events.yml
+  - compose/docker-compose.ai-infra.yml
+  - compose/docker-compose.langgraph.yml
+  - compose/docker-compose.gitlab.yml
+  - compose/docker-compose.integrations.yml
+

@@ -1,0 +1,171 @@
+# Ravenhelm Platform - Infrastructure Stack
+# ==========================================
+# Core data, cache, messaging, and secrets infrastructure
+# 
+# Services: postgres, redis, nats, localstack, openbao
+# Dependencies: security stack (for SPIRE certificates)
+#
+# Start: docker compose -f compose/docker-compose.infrastructure.yml up -d
+
+include:
+  - docker-compose.base.yml
+
+services:
+  # =========================================================================
+  # AWS SERVICES (LocalStack) - Secrets Manager, S3, KMS
+  # =========================================================================
+  localstack:
+    image: localstack/localstack:latest
+    container_name: gitlab-sre-localstack
+    ports:
+      - "4566:4566"           # LocalStack Gateway
+    environment:
+      - SERVICES=secretsmanager,ssm,s3,sqs,sns,kms,iam,sts
+      - DEBUG=0
+      - PERSISTENCE=1
+      - LOCALSTACK_HOST=localhost.localstack.cloud
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../localstack/init:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # DATABASE - PostgreSQL with pgvector (mTLS via SPIRE)
+  # =========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gitlab-sre-postgres
+    user: "1001:1001"  # ravenhelm platform user
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=postgres"
+      - "ravenhelm.workload=postgres"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    command:
+      - "postgres"
+      - "-c"
+      - "ssl=on"
+      - "-c"
+      - "ssl_cert_file=/run/spire/certs/svid.pem"
+      - "-c"
+      - "ssl_key_file=/run/spire/certs/key.pem"
+      - "-c"
+      - "ssl_ca_file=/run/spire/certs/bundle.pem"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+      # SPIRE certificates (owned by ravenhelm:1001:1001)
+      - postgres_certs:/run/spire/certs:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # MESSAGING - NATS JetStream (mTLS via SPIRE)
+  # =========================================================================
+  nats:
+    image: nats:latest
+    container_name: gitlab-sre-nats
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=nats"
+      - "ravenhelm.workload=nats"
+    command: 
+      - "--config=/etc/nats/nats-server.conf"
+    ports:
+      - "4222:4222"   # Client connections (TLS)
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - nats_data:/data
+      - ../config/nats:/etc/nats:ro
+      # SPIRE certificates (populated by spiffe-helper sidecar)
+      - nats_certs:/run/spire/certs:ro
+    # NATS minimal image has no shell/wget - rely on restart policy
+    # External healthcheck via http://localhost:8222/healthz
+    healthcheck:
+      test: ["NONE"]
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # CACHE - Redis (mTLS via SPIRE)
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: gitlab-sre-redis
+    user: "1001:1001"  # ravenhelm platform user
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=redis"
+      - "ravenhelm.workload=redis"
+    command: redis-server /etc/redis/redis.conf
+    volumes:
+      - redis_data:/data
+      - ../config/redis:/etc/redis:ro
+      # SPIRE certificates (owned by ravenhelm:1001:1001)
+      - redis_certs:/run/spire/certs:ro
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/run/spire/certs/bundle.pem", "-a", "ravenhelm-redis-dev-password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # SECRETS - OpenBao (Vault fork)
+  # =========================================================================
+  openbao:
+    image: quay.io/openbao/openbao:latest
+    container_name: gitlab-sre-openbao
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        chown -R openbao:openbao /openbao/data
+        exec su-exec openbao bao server -config=/openbao/config
+    user: "0"
+    cap_add:
+      - IPC_LOCK
+    environment:
+      - BAO_ADDR=http://0.0.0.0:8200
+      - BAO_API_ADDR=http://0.0.0.0:8200
+    volumes:
+      - ../openbao/config:/openbao/config:ro
+      - openbao_data:/openbao/data
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - platform_net
+

@@ -98,6 +98,11 @@ create_secret "ravenhelm/dev/zitadel/norns_service_account" \
   '{"id":"349412996360962068","token":"lQb4CPjjJcfQMIZ7lWQk8q12Pj5JGT9kLHLjoJfzvZPXmQlQVwB0vuzB3c8Dc7gttwR1wZk"}' \
   "Norns AI service account"
 
+# MCP / GitLab automation token placeholder
+create_secret "ravenhelm/dev/gitlab/mcp_service" \
+  '{"token":"SET_GITLAB_PAT","wiki_token":"SET_WIKI_TOKEN","notes":"Replace with real secure tokens"}' \
+  "Service account token for MCP GitLab server"
+
 # ---------------------------------------------------------------------------
 # OIDC Client Secrets (for SSO)
 # ---------------------------------------------------------------------------

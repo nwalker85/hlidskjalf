@@ -8,6 +8,7 @@ import { ThreadProvider } from "@/providers/Thread";
 import { ArtifactProvider } from "@/components/thread/artifact";
 import { Toaster } from "@/components/ui/sonner";
 import { NornsConsole } from "@/components/console";
+import { NornsSessionProvider } from "@/providers/NornsSessionProvider";
 
 const NornsIntelligenceConsole = dynamic(
   () =>
@@ -15,17 +16,19 @@ const NornsIntelligenceConsole = dynamic(
       return (
         <div className="fixed inset-0 overflow-hidden">
           <Toaster richColors position="top-center" />
-          <ThreadProvider>
-            <StreamProvider>
-              <ArtifactProvider>
-                <NornsConsole>
-                  <div className="h-full w-full">
-                    <Thread />
-                  </div>
-                </NornsConsole>
-              </ArtifactProvider>
-            </StreamProvider>
-          </ThreadProvider>
+          <NornsSessionProvider>
+            <ThreadProvider>
+              <StreamProvider>
+                <ArtifactProvider>
+                  <NornsConsole>
+                    <div className="h-full w-full">
+                      <Thread />
+                    </div>
+                  </NornsConsole>
+                </ArtifactProvider>
+              </StreamProvider>
+            </ThreadProvider>
+          </NornsSessionProvider>
         </div>
       );
     }),

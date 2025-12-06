@@ -8,6 +8,11 @@
 
 ### 1.1 Requirements Summary
 
+> **Repository & Knowledge Base Source of Truth**  
+> - GitLab project: `https://gitlab.ravenhelm.test/ravenhelm/hlidskjalf` (all MCP code + docs live here)  
+> - Knowledge base: GitLab wiki `https://gitlab.ravenhelm.test/ravenhelm/hlidskjalf/-/wikis/home`.  
+> - Until the docs automation effort is ready, do **not** auto-push content to the wiki or create GitLab issues; MCP tools should stage data (e.g., describe proposed updates, open MRs) but leave publication to the existing manual process.
+
 | Domain | Required Capabilities (Phase 4) | Later Phases |
 |--------|---------------------------------|--------------|
 | GitLab Projects | Create project from template, set visibility, add webhooks, manage deploy tokens | Issue/MR automation, pipeline triggers |
@@ -86,8 +91,8 @@ Knowledge base assets (docs/, wiki) remain SoT inside GitLab repos.
 
 1. **Authentication:**  
    - Traefik forward auth (oauth2-proxy) enforces Zitadel login for MCP endpoint.  
-   - MCP server validates JWT audience & scope (`mcp.server.gitlab.manage`).  
-   - Future: optional SPIRE SVID mutual TLS for agent pods.
+   - MCP server validates Zitadel JWTs directly (JWKS verification + `mcp.gitlab.manage` scope) per the [MCP Python SDK simple-auth example](https://github.com/modelcontextprotocol/python-sdk/tree/main/examples/servers/simple-auth).  
+   - SPIRE-issued TLS certificate powers HTTPS; Traefik consumes its own SPIFFE SVID (via `traefik-spiffe-helper`) and presents it to the backend, so `TLS_REQUIRE_CLIENT_CERT=true` remains enabled.
 
 2. **Authorization:**  
    - Tool-level ACL via config (e.g., only `hlidskjalf-agent` can call runner tools).  
@@ -98,8 +103,12 @@ Knowledge base assets (docs/, wiki) remain SoT inside GitLab repos.
    - MCP container fetches at startup via new secrets client module.
 
 4. **Audit:**  
-   - Every tool invocation logs structured event to Loki (labels: `mcp_tool`, `agent_id`, `target`).  
+   - Every tool invocation logs structured event to Loki (labels: `mcp_tool`, `subject`, `scopes`, `target`).  
    - Optional GitLab comment/MR note to record wiki sync.
+
+5. **Security Best Practices & Audit**  
+   - Implementation follows [Model Context Protocol Security Best Practices](https://modelcontextprotocol.io/specification/draft/basic/security_best_practices) — confused-deputy, session hijack, and scope minimisation guidance is applied (OAuth scope enforcement, no session cookies, consent handled by Zitadel).  
+   - An audit checklist (see Runbook-023) must be completed before promotion: verify SPIRE helper health, confirm mTLS toggle, ensure Zitadel scopes exist, and document any deviations.
 
 ## 6. Deployment Plan
 

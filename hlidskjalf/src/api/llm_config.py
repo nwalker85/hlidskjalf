@@ -6,15 +6,20 @@ Configuration is stored in Huginn session state and read by the agent on each tu
 """
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
+import asyncio
+import json
 import logging
+import httpx
 
 from src.memory.huginn.state_agent import (
     HuginnStateAgent,
     LLMConfiguration,
     LLMModelConfig,
 )
+from src.norns.squad_schema import Topics
 from src.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,7 @@ async def get_huginn() -> HuginnStateAgent:
         _huginn = HuginnStateAgent(
             redis_url=settings.REDIS_URL,
             state_ttl_seconds=86400,  # 24 hours for config
+            kafka_bootstrap=settings.KAFKA_BOOTSTRAP,
         )
     return _huginn
 
@@ -85,6 +91,67 @@ class AvailableProvidersResponse(BaseModel):
     providers: list[AvailableProvider]
 
 
+async def fetch_ollama_models() -> list[str]:
+    """
+    Retrieve available models from the configured Ollama endpoint.
+    Falls back to a static list when the daemon is unreachable.
+    """
+    default_models = [
+        "mistral-nemo:latest",
+        "llama3.1:8b",
+        "codellama:latest",
+        "deepseek-coder:latest",
+    ]
+    base_url = settings.OLLAMA_URL.rstrip("/") if settings.OLLAMA_URL else ""
+    if not base_url:
+        return default_models
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url}/api/tags")
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch Ollama tags: %s", exc)
+        return default_models
+
+    models: list[str] = []
+    for model in payload.get("models", []):
+        name = model.get("name") or model.get("model")
+        if name and name not in models:
+            models.append(name)
+
+    return models or default_models
+
+
+async def get_available_providers() -> list[AvailableProvider]:
+    """Build the provider inventory used by API responses and UI events."""
+    ollama_models = await fetch_ollama_models()
+    return [
+        AvailableProvider(
+            id="ollama",
+            name="Ollama",
+            available=bool(ollama_models),
+            models=ollama_models,
+            default_model=ollama_models[0] if ollama_models else "mistral-nemo:latest",
+        ),
+        AvailableProvider(
+            id="lmstudio",
+            name="LM Studio",
+            available=True,
+            models=["local-model"],
+            default_model="local-model",
+        ),
+        AvailableProvider(
+            id="openai",
+            name="OpenAI",
+            available=bool(settings.OPENAI_API_KEY),
+            models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+            default_model="gpt-4o",
+        ),
+    ]
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
@@ -102,35 +169,7 @@ async def list_providers():
     This returns static configuration - actual availability 
     should be checked via health endpoints.
     """
-    providers = [
-        AvailableProvider(
-            id="ollama",
-            name="Ollama",
-            available=True,  # Assume available, health check will verify
-            models=[
-                "mistral-nemo:latest",
-                "llama3.1:8b",
-                "codellama:latest",
-                "deepseek-coder:latest",
-            ],
-            default_model="mistral-nemo:latest",
-        ),
-        AvailableProvider(
-            id="lmstudio",
-            name="LM Studio",
-            available=True,
-            models=["local-model"],  # LM Studio serves whatever is loaded
-            default_model="local-model",
-        ),
-        AvailableProvider(
-            id="openai",
-            name="OpenAI",
-            available=bool(settings.OPENAI_API_KEY),
-            models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-            default_model="gpt-4o",
-        ),
-    ]
-    
+    providers = await get_available_providers()
     return AvailableProvidersResponse(providers=providers)
 
 
@@ -265,3 +304,50 @@ async def reset_llm_config(session_id: str):
     await huginn.update_llm_config(session_id, default_config)
     
     return {"status": "reset", "session_id": session_id}
+
+
+@router.get(
+    "/llm/config/events",
+    tags=["LLM Config"],
+    summary="Stream LLM configuration change events",
+)
+async def stream_llm_config_events():
+    """
+    Server-Sent Events stream of llm.config.changed notifications.
+    """
+
+    async def event_stream():
+        try:
+            from aiokafka import AIOKafkaConsumer
+
+            consumer = AIOKafkaConsumer(
+                Topics.LLM_CONFIG,
+                bootstrap_servers=settings.KAFKA_BOOTSTRAP,
+                auto_offset_reset="latest",
+                group_id="llm-config-ui",
+                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+            )
+
+            await consumer.start()
+            yield f"data: {json.dumps({'type': 'connected'})}\n\n"
+
+            try:
+                async for msg in consumer:
+                    event = msg.value
+                    if event:
+                        yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                await consumer.stop()
+
+        except Exception as exc:
+            logger.error("LLM config stream failed: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )

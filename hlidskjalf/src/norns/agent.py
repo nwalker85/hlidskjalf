@@ -7,6 +7,7 @@ and persist short-term context in Redis.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Annotated, Literal, Optional, Sequence, TypedDict
 
@@ -25,6 +26,7 @@ from langgraph.graph import END, StateGraph, add_messages
 from langgraph.prebuilt import ToolNode
 
 from src.core.config import get_settings
+from src.norns.llm_config_registry import get_llm_config_registry
 from src.norns.planner import generate_todo_plan
 from src.norns.tools import NORN_TOOLS
 from src.norns.skills import get_skills_context
@@ -50,6 +52,7 @@ class NornState(TypedDict, total=False):
     session_id: str
     # Cognitive context injected into system prompt
     cognitive_context: str
+    llm_config: dict
 
 
 PLANNING_KEYWORDS = [
@@ -64,70 +67,227 @@ PLANNING_KEYWORDS = [
 ]
 
 
+def _llm_config_to_dict(config) -> dict:
+    return {
+        "reasoning": {
+            "provider": config.reasoning.provider,
+            "model": config.reasoning.model,
+            "temperature": config.reasoning.temperature,
+        },
+        "tools": {
+            "provider": config.tools.provider,
+            "model": config.tools.model,
+            "temperature": config.tools.temperature,
+        },
+        "subagents": {
+            "provider": config.subagents.provider,
+            "model": config.subagents.model,
+            "temperature": config.subagents.temperature,
+        },
+    }
+
+
+def _fetch_llm_config(session_id: str):
+    from src.norns.memory_tools import _huginn
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_huginn.get_llm_config(session_id))
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
 def _get_session_llm_config(session_id: str) -> dict | None:
     """
-    Get LLM configuration from Huginn state for a session.
-    
-    Returns dict with 'reasoning', 'tools', 'subagents' keys,
-    or None if no config is set.
+    Get LLM configuration for a session via event cache or Huginn state.
     """
     import logging
+
     logger = logging.getLogger(__name__)
-    
+
+    # 1. Try registry cache fed by events
+    try:
+        settings = get_settings()
+        registry = get_llm_config_registry(settings.KAFKA_BOOTSTRAP)
+        registry.start()
+        cached = registry.get_config(session_id)
+        if cached:
+            return cached
+    except Exception as exc:
+        logger.debug("LLM config registry unavailable: %s", exc)
+
+    # 2. Fall back to Huginn perception/Redis
     try:
         from src.norns.memory_tools import _huginn
-        if _huginn:
-            state = _huginn.perceive(session_id)
-            if state and hasattr(state, 'llm_config') and state.llm_config:
-                config = state.llm_config
-                return {
-                    "reasoning": {
-                        "provider": config.reasoning.provider,
-                        "model": config.reasoning.model,
-                        "temperature": config.reasoning.temperature,
-                    },
-                    "tools": {
-                        "provider": config.tools.provider,
-                        "model": config.tools.model,
-                        "temperature": config.tools.temperature,
-                    },
-                    "subagents": {
-                        "provider": config.subagents.provider,
-                        "model": config.subagents.model,
-                        "temperature": config.subagents.temperature,
-                    },
-                }
-    except Exception as e:
-        logger.debug(f"Could not get LLM config from Huginn: {e}")
-    
+
+        if not _huginn:
+            return None
+
+        state = _huginn.perceive(session_id)
+        if (not state or not getattr(state, "llm_config", None)) and hasattr(
+            _huginn, "get_llm_config"
+        ):
+            # Use Redis fallback to ensure we see updates from other processes.
+            config = _fetch_llm_config(session_id)
+            if config:
+                return _llm_config_to_dict(config)
+
+        if state and getattr(state, "llm_config", None):
+            return _llm_config_to_dict(state.llm_config)
+    except Exception as exc:
+        logger.debug(f"Could not get LLM config from Huginn: {exc}")
+
     return None
 
-# Compact instructions to reduce context window usage
-REASONING_INSTRUCTIONS = """Think step-by-step. Use tools to gather info before answering."""
-
-TODO_INSTRUCTIONS = """Use write_todos for complex multi-step work."""
-
-SKILLS_INSTRUCTIONS = """search_skills(query) to find solutions. create_skill() for novel ones."""
-
-COGNITIVE_ARCHITECTURE_INSTRUCTIONS = """## Memory: muninn_recall(query) FIRST, muninn_remember(content) to save."""
-
-SELF_AWARENESS_INSTRUCTIONS = """## Workspace: /app (container) = ~/Development/hlidskjalf (host). Use workspace_* tools."""
-
-PROBLEM_SOLVING_INSTRUCTIONS = """## Tools: workspace_list/read/write for files. execute_terminal_command for shell/docker/git."""
-
 def build_norns_system_prompt() -> str:
-    """Build a COMPACT system prompt to save context window space."""
-    return f"""# Norns Assistant
+    """Build the Norns supervisor prompt following the canonical format."""
+    return """You are Norns, the DeepAgent / LangGraph supervisor for the Quant AI Ravenhelm platform.
 
-You help with the Ravenhelm platform. Be concise.
+###############################################
+### HOW YOU MUST THINK (MANDATORY FORMAT)
+###############################################
+For every task:
+[THINK]
+- Do full chain-of-thought: clarify intent, inspect state/context, plan subtasks, choose tools/subagents, consider risks.
+- Be detailed and explicit here. This block is NOT visible to the user.
+[/THINK]
 
-{SELF_AWARENESS_INSTRUCTIONS}
-{PROBLEM_SOLVING_INSTRUCTIONS}
-{COGNITIVE_ARCHITECTURE_INSTRUCTIONS}
-{SKILLS_INSTRUCTIONS}
-{TODO_INSTRUCTIONS}
+Then produce a clean Markdown answer with NO internal reasoning.
 
-Keep responses brief. Use tools to gather info before answering."""
+###############################################
+### PROMPT-WRITING PRINCIPLES
+###############################################
+Always:
+- Put instructions BEFORE context, and fence input:
+
+Instruction:
+<what to do>
+
+Text:
+\"\"\"  
+<text or payload>
+\"\"\"  
+
+- Be explicit about:
+  - outcome (what "done" is)
+  - length ("3–5 sentences", "8–12 bullets", "~1 page")
+  - format ("Markdown sections", "JSON object", "Python code block")
+  - style ("runbook", "executive summary", "architecture spec")
+  - constraints ("must use platform_net", "read-only", "no PII")
+- Show desired output shape when you need structured results:
+
+Example:
+Company names: <comma_separated_list>
+People names: <comma_separated_list>
+Topics: <comma_separated_list>
+Themes: <comma_separated_list>
+
+- Escalate clarity: zero-shot → add 1–2 examples → only then use a specialized/fine-tuned agent.
+- Replace "do NOT X" with "instead do Y".
+- For code, use leading tokens:
+  - Python: start with "import"
+  - SQL: start with "SELECT"
+- When spawning subagents, ALWAYS specify:
+  - role
+  - goal
+  - inputs/context
+  - constraints
+  - required output format (with an example).
+
+###############################################
+### FABRICS & ROLES
+###############################################
+Huginn = State (L3/L4)
+- "What is happening now?"
+- Turn/session truth: utterance, intent, workflow step, slots, pending actions.
+- Provided via state tools / cache. Treat given state as ground truth; do NOT reach back to raw logs/STT yourself.
+
+Frigg = Context (Persona & Policy)
+- "Who is this & what matters now?"
+- Persona Snapshot: preferences, risk flags, recent episodes, relationship/role.
+- Use context tools; do NOT query raw user DBs in the hot path.
+
+Muninn = Long-Term Memory (Itsuki + Postgres/pgvector)
+- Episodic, semantic, procedural memory + RAG.
+- Access only via memory tools (e.g., memory.query / memory.promote / memory.reinforce / memory.debug).
+- Do NOT query underlying databases or vector stores directly.
+
+Hel = Governance & Quarantine
+- Safety, DLQ, destructive forgetting and nullification.
+- Use hel.quarantine / hel.redact / hel.restore_from_quarantine / hel.stats when memory appears unsafe, stale, or corrupted.
+
+Hard rule:
+No agent (including you) keeps its own long-lived state. All persistence uses Huginn, Frigg, Muninn, or Hel.
+
+###############################################
+### RAVENHELM PLATFORM CONSTRAINTS
+###############################################
+Ingress:
+- Traefik (ravenhelm-proxy) is the ONLY HTTP ingress. Never design alternate public gateways.
+
+Networking:
+- platform_net is the canonical shared Docker bridge.
+- New services must declare platform_net as external: true.
+- Do NOT introduce ad-hoc bridges (e.g., gitlab-network).
+
+Identity & Secrets:
+- Identities via Zitadel only.
+- ALL runtime secrets live in LocalStack Secrets Manager (e.g., ravenhelm/dev/postgres/credentials, ravenhelm/dev/gitlab/mcp_service).
+- Never propose .env secrets or hard-coded tokens.
+- Never commit PATs, webhook tokens, or NextAuth secrets.
+
+SPIRE / SPIFFE:
+- Internal traffic (Postgres, Redis, NATS, MCP, etc.) uses SPIRE-based mTLS.
+- New workloads must use configs under config/spiffe-helper/.
+- Traefik forwards to mTLS backends via serversTransport entries in ravenhelm-proxy/dynamic.yml.
+
+Work Management & Docs:
+- GitLab issues are the source of truth:
+  - exactly one type:: label
+  - exactly one workflow:: label
+  - appropriate area:: and okr:: labels
+- Norns automation only acts on issues with BOTH actor::norns AND workflow::ready.
+- docs/wiki and docs/runbooks are authoritative:
+  - runbooks follow RUNBOOK-0xx; update the catalog on changes.
+  - ADRs live in docs/architecture.
+  - Update PROJECT_PLAN.md and docs/LESSONS_LEARNED.md when proposing material arch/ops changes.
+
+Operator Preferences:
+- Always provide actionable steps + verification commands/checks.
+- Use absolute repo paths where possible (e.g., /Users/nwalker/Development/hlidskjalf/...).
+- For any change impacting shared services, governance, or compliance:
+  - reference the Enterprise Multi-Platform Architecture Scaffold
+  - state whether you align, extend, or intentionally deviate.
+
+###############################################
+### DECISION LOOP
+###############################################
+For every user request:
+
+[THINK]
+1) Clarify intent and "done" (artifact, decision, plan).
+2) Inspect Huginn state + Frigg persona.
+3) Decompose into ordered subtasks.
+4) Decide tool vs subagent for each subtask.
+5) Call memory.query when domain knowledge/docs/history are needed; scope by domain/doc_type.
+6) Route unsafe/stale/incorrect memories through Hel.
+7) Integrate tool/subagent outputs, resolve conflicts using reliability, recency, and consistency with state/context.
+[/THINK]
+
+Then:
+- Respond in Markdown.
+- State what you did.
+- Surface assumptions, risks, and dependencies.
+- List explicit next steps (for humans or agents).
+- Include verification steps for any operational change.
+
+###############################################
+### STYLE
+###############################################
+Be structured and direct. Use headings and bullets. No filler. You are a supervisor, not a chatty assistant.
+"""
 
 # Static prompt for backwards compatibility
 NORNS_SYSTEM_PROMPT = build_norns_system_prompt()
@@ -228,7 +388,7 @@ def create_llm_from_config(
         llm = ChatOpenAI(
             model=model,
             base_url=settings.LMSTUDIO_URL,
-            api_key="lm-studio",
+            api_key=settings.LMSTUDIO_API_KEY,
             temperature=temperature,
         )
     elif provider == "huggingface" and HF_AVAILABLE:
@@ -272,12 +432,21 @@ def get_llm_for_purpose(purpose: str, session_config: dict):
         LLM instance configured for the purpose
     """
     import logging
+    import os
     logger = logging.getLogger(__name__)
+    settings = get_settings()
     
-    # Get config for purpose, fallback to defaults
+    # Get config for purpose, fallback to global settings
     config = session_config.get(purpose, {})
-    provider = config.get("provider", "ollama")
-    model = config.get("model", "mistral-nemo:latest")
+    provider = config.get("provider", os.environ.get("LLM_PROVIDER", settings.LLM_PROVIDER).lower())
+    
+    # Default model based on provider
+    if provider == "lmstudio":
+        default_model = settings.LMSTUDIO_MODEL
+    else:
+        default_model = settings.OLLAMA_CHAT_MODEL
+    
+    model = config.get("model", default_model)
     temperature = config.get("temperature", 0.7 if purpose == "reasoning" else 0.1)
     
     logger.debug(f"LLM for {purpose}: {provider}/{model} @ temp={temperature}")
@@ -324,7 +493,7 @@ def create_llm(use_local: bool = True):
         llm = ChatOpenAI(
             model=settings.LMSTUDIO_MODEL,
             base_url=settings.LMSTUDIO_URL,
-            api_key="lm-studio",  # LM Studio doesn't require a real key
+            api_key=settings.LMSTUDIO_API_KEY,
             temperature=settings.NORNS_TEMPERATURE,
         )
     elif provider == "huggingface" and HF_AVAILABLE:
@@ -540,7 +709,9 @@ def norns_node(state: NornState) -> NornState:
     
     # Get LLM config from Huginn state for dynamic model selection
     session_id = state.get("session_id") or state.get("context", {}).get("thread_id", "default")
-    llm_config = _get_session_llm_config(session_id)
+    llm_config = state.get("llm_config") or _get_session_llm_config(session_id)
+    if llm_config:
+        state["llm_config"] = llm_config
     
     if llm_config:
         # Use session-specific config for reasoning
@@ -780,7 +951,11 @@ class NornsAgent:
             "current_norn": "verdandi",
             "context": {"session": self.session, "thread_id": thread_id},
             "todos": todos,
+            "session_id": thread_id,
         }
+        llm_config = _get_session_llm_config(thread_id)
+        if llm_config:
+            state["llm_config"] = llm_config
         return state, human
 
     async def chat(self, message: str, thread_id: Optional[str] = None) -> str:
@@ -862,6 +1037,7 @@ def _initialize_cognitive_components():
             from src.memory.huginn import HuginnStateAgent
             huginn = HuginnStateAgent(
                 redis_url=settings.REDIS_URL or "redis://redis:6379",
+                kafka_bootstrap=settings.KAFKA_BOOTSTRAP,
             )
             logger.info("✓ Huginn (State) initialized")
         except Exception as e:

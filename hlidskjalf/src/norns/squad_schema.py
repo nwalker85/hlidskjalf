@@ -108,6 +108,7 @@ class Topics:
     """Redpanda topic names for agent communication"""
     # Main coordination topic
     SQUAD_COORDINATION = "ravenhelm.squad.coordination"
+    LLM_CONFIG = "ravenhelm.squad.llm_config"
     
     # Service-specific topics
     CERTS = "ravenhelm.squad.certs"
@@ -143,6 +144,7 @@ AGENT_TOPICS = {
     AgentRole.RAG_AGENT: [Topics.RAG, Topics.SQUAD_COORDINATION],
     AgentRole.GRAPH_AGENT: [Topics.GRAPH, Topics.SQUAD_COORDINATION],
     AgentRole.HLIDSKJALF_AGENT: [Topics.HLIDSKJALF, Topics.SQUAD_COORDINATION],
+    # LLM configuration changes are broadcast to all
 }
 
 

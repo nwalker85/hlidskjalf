@@ -44,8 +44,9 @@ services:
       - KAFKA_BOOTSTRAP=redpanda:9092
       # LLM Provider: 'ollama', 'lmstudio', 'openai'
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
-      - LMSTUDIO_URL=http://host.docker.internal:1234/v1
+      - LMSTUDIO_URL=${LMSTUDIO_URL:-http://host.docker.internal:1234/v1}
       - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-ministral-3-14b-reasoning}
+      - LMSTUDIO_API_KEY=${LMSTUDIO_API_KEY:-lm-studio}
     volumes:
       # Mount the ENTIRE project root for workspace access
       - ..:/app

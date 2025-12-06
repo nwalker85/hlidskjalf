@@ -5,12 +5,15 @@ The rainbow bridge connecting external services to AI backends.
 Uses extensible adapter and backend patterns for multi-platform support.
 """
 
+from __future__ import annotations
+
 import structlog
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from prometheus_client import make_asgi_app
 
 from src.config import get_settings
 from src.adapters import (
@@ -29,6 +32,14 @@ from src.backends import (
     shutdown_backend,
 )
 from src.backends.registry import list_registered_backends
+from src.gitlab_client import GitLabClient
+from src.secrets import get_secrets_helper
+from src.work_items import (
+    WORK_QUEUE,
+    WorkItem,
+    WorkItemPoller,
+    WorkItemProcessor,
+)
 
 # Configure structured logging
 structlog.configure(
@@ -45,6 +56,11 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+_gitlab_client: GitLabClient | None = None
+_work_item_processor: WorkItemProcessor | None = None
+_work_item_poller: WorkItemPoller | None = None
+_gitlab_webhook_secret: str | None = None
 
 
 async def handle_adapter_message(message: AdapterMessage) -> AdapterResponse:
@@ -97,6 +113,7 @@ async def handle_adapter_message(message: AdapterMessage) -> AdapterResponse:
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     settings = get_settings()
+    global _gitlab_client, _work_item_processor, _work_item_poller, _gitlab_webhook_secret
     logger.info(
         "bifrost_starting",
         app=settings.APP_NAME,
@@ -125,12 +142,53 @@ async def lifespan(app: FastAPI):
         enabled_adapters=list(enabled_adapters.keys()),
     )
     
+    # GitLab → Norns integration (optional if secrets available)
+    secrets_helper = get_secrets_helper(
+        endpoint_url=settings.AWS_ENDPOINT_URL,
+        region_name=settings.AWS_REGION,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    )
+
+    gitlab_token = settings.GITLAB_PAT
+    if not gitlab_token and settings.GITLAB_PAT_SECRET_NAME:
+        secret_payload = secrets_helper.get_secret_json(settings.GITLAB_PAT_SECRET_NAME)
+        gitlab_token = secret_payload.get("token")
+
+    _gitlab_webhook_secret = settings.GITLAB_WEBHOOK_SECRET
+    if not _gitlab_webhook_secret and settings.GITLAB_WEBHOOK_SECRET_NAME:
+        try:
+            _gitlab_webhook_secret = secrets_helper.get_secret(settings.GITLAB_WEBHOOK_SECRET_NAME)
+        except Exception as exc:  # pragma: no cover - logs for ops
+            logger.warning("gitlab_webhook_secret_missing", error=str(exc))
+
+    if gitlab_token:
+        _gitlab_client = GitLabClient(settings.GITLAB_BASE_URL, gitlab_token)
+        _work_item_processor = WorkItemProcessor(_gitlab_client, settings.GITLAB_PROJECT_ID)
+        _work_item_processor.start()
+
+        _work_item_poller = WorkItemPoller(
+            _gitlab_client,
+            settings.GITLAB_PROJECT_ID,
+            interval_seconds=settings.WORKQUEUE_POLL_INTERVAL_SECONDS,
+        )
+        _work_item_poller.start()
+        logger.info("gitlab_workqueue_enabled", project_id=settings.GITLAB_PROJECT_ID)
+    else:
+        logger.warning("gitlab_token_missing", message="Work queue disabled")
+
     yield
     
     # Shutdown
     logger.info("bifrost_shutting_down")
     await shutdown_adapters()
     await shutdown_backend()
+    if _work_item_poller:
+        await _work_item_poller.stop()
+    if _work_item_processor:
+        await _work_item_processor.stop()
+    if _gitlab_client:
+        await _gitlab_client.close()
 
 
 # Create FastAPI app
@@ -148,6 +206,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 
 # =============================================================================
@@ -427,6 +488,63 @@ async def direct_chat(request: DirectChatRequest):
         thread_id=response.thread_id,
         backend=backend.name,
     )
+
+
+# =============================================================================
+# GitLab → Norns work queue webhook
+# =============================================================================
+
+@app.post("/api/work-items")
+async def work_item_webhook(request: Request):
+    """Receive GitLab issue hooks and enqueue Norns work items."""
+    if not _gitlab_client or not _work_item_processor:
+        raise HTTPException(status_code=503, detail="Work queue not initialized")
+
+    expected_token = _gitlab_webhook_secret
+    provided_token = request.headers.get("X-Gitlab-Token")
+    if expected_token and provided_token != expected_token:
+        logger.warning("gitlab_webhook_invalid_token")
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    event_name = request.headers.get("X-Gitlab-Event", "")
+    if event_name not in {"Issue Hook", "Confidential Issue Hook"}:
+        return {"status": "ignored", "reason": "unsupported_event"}
+
+    payload = await request.json()
+    issue_attrs = payload.get("object_attributes") or {}
+    issue_id = issue_attrs.get("id")
+    issue_iid = issue_attrs.get("iid")
+
+    if not issue_id or not issue_iid:
+        raise HTTPException(status_code=400, detail="Missing issue identifiers")
+
+    labels: list[str] = []
+    for label in payload.get("labels", []):
+        if isinstance(label, dict) and label.get("title"):
+            labels.append(label["title"])
+        elif isinstance(label, str):
+            labels.append(label)
+
+    if "actor::norns" not in labels or "workflow::ready" not in labels:
+        return {"status": "ignored", "reason": "label_gate"}
+
+    item = WorkItem(
+        project_id=get_settings().GITLAB_PROJECT_ID,
+        issue_id=issue_id,
+        issue_iid=issue_iid,
+        title=issue_attrs.get("title", "Untitled"),
+        description=issue_attrs.get("description") or "",
+        labels=labels,
+        web_url=issue_attrs.get("url") or issue_attrs.get("web_url") or "",
+        updated_at=issue_attrs.get("updated_at") or "",
+        author=(payload.get("user") or {}).get("username"),
+        assigned_to=(issue_attrs.get("assignee") or {}).get("username"),
+        payload=payload,
+        source="webhook",
+    )
+
+    await WORK_QUEUE.enqueue(item)
+    return {"status": "queued", "issue": issue_iid}
 
 
 # =============================================================================

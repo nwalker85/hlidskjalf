@@ -7,57 +7,83 @@ services:
     image: traefik:v3.1
     container_name: ravenhelm-traefik
     restart: unless-stopped
-    
+    depends_on:
+      - docker-socket-proxy
     ports:
-      # HTTP -> HTTPS redirect
       - "80:80"
-      # Main HTTPS entry point for all *.ravenhelm.test
       - "443:443"
-      # Traefik dashboard
       - "8888:8080"
-      
-      # LiveKit WebRTC ports (will be handled by labels in service config)
       - "7885:7885"
       - "7886:7886"
       - "7887-7897:7887-7897/udp"
-
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ./config/certs:/certs:ro
-
+      - traefik_spire_certs:/run/spire/certs:ro
     environment:
       - TRAEFIK_LOG_LEVEL=INFO
-
+      - DOCKER_API_VERSION=1.52
     networks:
       - edge
       - platform_net
-      - gitlab_net
       - saaa_net
       - m2c_net
       - tinycrm_net
       - ravenhelm
-
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.traefik.rule=Host(`proxy.ravenhelm.test`)"
       - "traefik.http.routers.traefik.tls=true"
       - "traefik.http.routers.traefik.service=api@internal"
       - "traefik.http.routers.traefik.middlewares=secure-headers@file"
-
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+  traefik-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: ravenhelm-traefik-spiffe-helper
+    user: "root"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"
+    volumes:
+      - ../config/spiffe-helper/traefik-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - traefik_spire_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    networks:
+      - platform_net
+    restart: unless-stopped
+
+  docker-socket-proxy:
+    image: ghcr.io/tecnativa/docker-socket-proxy:latest
+    container_name: ravenhelm-docker-socket-proxy
+    environment:
+      - CONTAINERS=1
+      - EVENTS=1
+      - NETWORKS=1
+      - INFO=1
+      - VERSION=1
+      - PING=1
+      - SERVICES=0
+      - TASKS=0
+      - SWARM=0
+      - AUTH=0
+      - POST=0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker-socket-proxy/haproxy.cfg.template:/usr/local/etc/haproxy/haproxy.cfg.template:ro
+    networks:
+      - platform_net
+    restart: unless-stopped
 
 networks:
   edge:
@@ -65,9 +91,6 @@ networks:
     external: true
   platform_net:
     name: platform_net
-    external: true
-  gitlab_net:
-    name: gitlab_net
     external: true
   saaa_net:
     name: saaa_net
@@ -81,3 +104,9 @@ networks:
   ravenhelm:
     name: ravenhelm-network
     external: true
+
+volumes:
+  traefik_spire_certs:
+  spire_agent_socket:
+    external: true
+    name: hlidskjalf_spire_agent_socket

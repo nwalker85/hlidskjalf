@@ -399,6 +399,18 @@ volumes:
   grafana_data:
 ```
 
+### Step 6a: Alerting Rules
+
+1. Reference the rules directory from `observability/prometheus/prometheus.yml`:
+
+   ```yaml
+   rule_files:
+     - "rules/self_heal.rules.yml"
+   ```
+
+2. Maintain the baseline alerts in `/Users/nwalker/Development/hlidskjalf/observability/prometheus/rules/self_heal.rules.yml`. This file ships the platform-wide `ServiceDown`, `HighErrorRate`, `HighLatency`, `HighCPU`, `HighMemory`, and `ContainerRestarting` alerts used by Alertmanager.
+3. After editing any rule files, reload Prometheus with `curl -X POST http://localhost:9090/-/reload` (requires `--web.enable-lifecycle`) or `docker compose restart prometheus`.
+
 ### Step 7: Start the Observability Stack
 
 ```bash

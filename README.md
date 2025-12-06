@@ -379,7 +379,7 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/myapp
 REDIS_URL=redis://redis:6379/0
 KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
 NATS_URL=nats://nats:4222
-OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
 LANGFUSE_HOST=https://langfuse.observe.ravenhelm.test:8443
 ```
 

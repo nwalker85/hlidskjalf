@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { Check, ChevronDown, RefreshCw, Server, Cloud, Cpu, AlertCircle, Copy, CheckCircle } from "lucide-react";
+import { useLlmConfigEvents } from "@/hooks/useLlmConfigEvents";
 
 interface ProviderStatus {
   name: string;
@@ -60,6 +61,12 @@ export function LLMSelector() {
   useEffect(() => {
     fetchConfig();
   }, [fetchConfig]);
+
+  useLlmConfigEvents(true, (event) => {
+    if (event.type === "llm.providers.updated") {
+      fetchConfig();
+    }
+  });
 
   const handleProviderChange = (provider: string) => {
     setSelectedProvider(provider);

@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Backend API URL (internal Docker network)
-const BACKEND_URL = process.env.BACKEND_URL || "http://hlidskjalf:8000";
+// Resolve the control-plane API base URL in priority order:
+// 1. BACKEND_URL (explicit override)
+// 2. INTERNAL_API_URL (if set by deployments)
+// 3. NEXT_PUBLIC_API_URL (falls back to public domain w/ auth)
+// 4. Default internal service address inside Docker
+const BACKEND_URL =
+  process.env.BACKEND_URL ||
+  process.env.INTERNAL_API_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://hlidskjalf:8900";
 
 interface LLMModelConfig {
   provider: string;

@@ -18,13 +18,15 @@ from typing import Any
 import redis.asyncio as redis
 from pydantic import BaseModel, Field
 
+from src.norns.squad_schema import Topics
+
 logger = logging.getLogger(__name__)
 
 
 class LLMModelConfig(BaseModel):
     """Configuration for a single LLM purpose"""
-    provider: str = "ollama"  # ollama, lmstudio, openai
-    model: str = "mistral-nemo:latest"
+    provider: str = "lmstudio"  # ollama, lmstudio, openai
+    model: str = "mistralai/ministral-3-14b-reasoning"
     temperature: float = 0.7
     
     
@@ -32,10 +34,10 @@ class LLMConfiguration(BaseModel):
     """Runtime LLM configuration - different models for different purposes"""
     reasoning: LLMModelConfig = Field(default_factory=LLMModelConfig)
     tools: LLMModelConfig = Field(default_factory=lambda: LLMModelConfig(
-        provider="ollama", model="mistral-nemo:latest", temperature=0.1
+        provider="lmstudio", model="mistralai/ministral-3-14b-reasoning", temperature=0.1
     ))
     subagents: LLMModelConfig = Field(default_factory=lambda: LLMModelConfig(
-        provider="ollama", model="mistral-nemo:latest", temperature=0.5
+        provider="lmstudio", model="mistralai/ministral-3-14b-reasoning", temperature=0.5
     ))
 
 
@@ -83,12 +85,13 @@ class HuginnStateAgent:
     
     def __init__(
         self,
-        redis_url: str = "redis://redis:6379",  # Docker service name
+        redis_url: Any = "redis://redis:6379",  # Docker service name
         state_ttl_seconds: int = 3600,  # 1 hour
         nats_url: str | None = None,
         kafka_bootstrap: str | None = None,
     ):
-        self.redis_url = redis_url
+        # Accept RedisDsn / AnyUrl instances as well as plain strings
+        self.redis_url = str(redis_url)
         self.state_ttl = state_ttl_seconds
         self.nats_url = nats_url
         self.kafka_bootstrap = kafka_bootstrap
@@ -326,7 +329,7 @@ class HuginnStateAgent:
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 await producer.send_and_wait(
-                    "huginn.llm_config",
+                    Topics.LLM_CONFIG,
                     json.dumps(event_data).encode()
                 )
         except Exception as e:

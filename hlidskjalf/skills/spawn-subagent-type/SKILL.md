@@ -187,7 +187,7 @@ PORT={allocated_port}
 # Run container
 docker run -d \
   --name ravenhelm-{agent_name} \
-  --network gitlab-network \
+  --network platform_net \
   -p $PORT:$PORT \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
@@ -233,7 +233,7 @@ agents:
       - tool2
     container:
       image: "ravenhelm/{agent_name}:latest"
-      network: "gitlab-network"
+      network: "platform_net"
       restart_policy: "unless-stopped"
     created_at: "{timestamp}"
     created_by: "norns"
@@ -256,7 +256,7 @@ Add service definition:
     environment:
       - OPENAI_API_KEY=${{OPENAI_API_KEY}}
     networks:
-      - gitlab-network
+      - platform_net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:{port}/info"]
       interval: 30s
@@ -301,7 +301,7 @@ docker build -t ravenhelm/$AGENT_NAME:latest hlidskjalf/src/agents/$AGENT_NAME
 # Deploy
 docker run -d \
   --name ravenhelm-$AGENT_NAME \
-  --network gitlab-network \
+  --network platform_net \
   -p $NEXT_PORT:$NEXT_PORT \
   ravenhelm/$AGENT_NAME:latest
 

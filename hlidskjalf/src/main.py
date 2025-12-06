@@ -46,6 +46,7 @@ from src.api.routes import router as api_router
 from src.api.llm_config import router as llm_config_router
 from src.norns.routes import router as norns_router
 from src.services.deployment_manager import HealthCheckScheduler
+from src.services.llm_model_watcher import LLMModelWatcher
 
 # =============================================================================
 # Configuration
@@ -124,11 +125,19 @@ async def lifespan(app: FastAPI):
     await scheduler.start()
     
     logger.info("Health check scheduler started")
+
+    model_watcher = LLMModelWatcher(
+        poll_interval_seconds=settings.LLM_PROVIDER_REFRESH_SECONDS,
+        kafka_bootstrap=settings.KAFKA_BOOTSTRAP,
+    )
+    await model_watcher.start()
+    logger.info("LLM model watcher started")
     
     yield
     
     # Shutdown
     await scheduler.stop()
+    await model_watcher.stop()
     await engine.dispose()
     
     logger.info("Ravenhelm Control Plane shutdown complete")

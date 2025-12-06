@@ -14,6 +14,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useNornsSession } from "@/providers/NornsSessionProvider";
 
 function ThreadList({
   threads,
@@ -22,7 +23,8 @@ function ThreadList({
   threads: Thread[];
   onThreadClick?: (threadId: string) => void;
 }) {
-  const [threadId, setThreadId] = useQueryState("threadId");
+  const { config, updateThreadId } = useNornsSession();
+  const threadId = config?.threadId ?? null;
 
   return (
     <div className="flex h-full w-full flex-col items-start justify-start gap-2 overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-raven-700 [&::-webkit-scrollbar-track]:bg-transparent">
@@ -50,7 +52,9 @@ function ThreadList({
                 e.preventDefault();
                 onThreadClick?.(t.thread_id);
                 if (t.thread_id === threadId) return;
-                setThreadId(t.thread_id);
+                updateThreadId(t.thread_id).catch((err) =>
+                  console.error("Failed to switch thread", err),
+                );
               }}
             >
               <p className="truncate text-ellipsis">{itemText}</p>

@@ -70,6 +70,31 @@ http:
           - secure-headers
           - zero-trust-auth
 
+    # ==========================================================================
+    # EXTERNAL MODEL SERVER AUTH
+    # ==========================================================================
+    model-server-auth:
+      basicAuth:
+        users:
+          # Username: ravenhelm
+          # Password: See .model-server-credentials
+          - "ravenhelm:$2y$05$hiGFf1rrFpDUgOSpI8ospeUwyI9fnAimSb1I/8mt9gWvCXeTeFohq"
+    
+    # Chain: secure headers + basic auth for model server
+    model-server-protected:
+      chain:
+        middlewares:
+          - secure-headers
+          - model-server-auth
+
+  serversTransports:
+    mcp-gitlab-transport:
+      rootCAs:
+        - /certs/spire-bundle.pem
+      certificates:
+        - certFile: /run/spire/certs/svid.pem
+          keyFile: /run/spire/certs/key.pem
+
   # ==========================================================================
   # ROUTERS
   # ==========================================================================
@@ -96,9 +121,30 @@ http:
       tls: {}
 
     # ─────────────────────────────────────────────────────────────────────────
+    # EXTERNAL SERVICES
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    # External Model Server (ravenhelm.dev:6701)
+    model-server:
+      rule: "Host(`models.ravenhelm.dev`)"
+      service: model-server-svc
+      middlewares:
+        - model-server-protected
+      tls: {}
+      priority: 1000
+
+    # ─────────────────────────────────────────────────────────────────────────
     # HLIÐSKJÁLF — Platform Services
     # ─────────────────────────────────────────────────────────────────────────
     
+    norns-workqueue:
+      rule: "Host(`norns.ravenhelm.test`) && PathPrefix(`/api/work-items`)"
+      service: norns-workqueue-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+      priority: 1500
+
     # Norns LangGraph API (CORS for UI, auth handled by calling app)
     # Note: The UI passes the user's token; API validates it directly
     norns:
@@ -287,6 +333,14 @@ http:
         - protected
       tls: {}
 
+    # MCP GitLab server
+    mcp-gitlab:
+      rule: "Host(`mcp.gitlab.ravenhelm.test`)"
+      service: mcp-gitlab-svc
+      middlewares:
+        - protected
+      tls: {}
+
     # ─────────────────────────────────────────────────────────────────────────
     # RAG PIPELINE (Protected)
     # ─────────────────────────────────────────────────────────────────────────
@@ -337,6 +391,114 @@ http:
         - protected
       tls: {}
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # WORK PROJECTS (Quant/)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # M2C Demo - Grid/Utility Compliance Monitoring
+    m2c-ui:
+      rule: "Host(`m2c.ravenhelm.test`)"
+      service: m2c-ui-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    m2c-api:
+      rule: "Host(`m2c-api.ravenhelm.test`)"
+      service: m2c-api-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    m2c-n8n:
+      rule: "Host(`m2c-n8n.ravenhelm.test`)"
+      service: m2c-n8n-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    m2c-redpanda:
+      rule: "Host(`m2c-redpanda.ravenhelm.test`)"
+      service: m2c-redpanda-console-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-frontend:
+      rule: "Host(`saaa.ravenhelm.test`) || Host(`frontend.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    saaa-api:
+      rule: "Host(`api.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    saaa-agents:
+      rule: "Host(`agents.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-kafka:
+      rule: "Host(`kafka.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-infra:
+      rule: "Host(`infra.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-core:
+      rule: "Host(`core.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-capability:
+      rule: "Host(`capability.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # SIP Voice Platform
+    sip-ui:
+      rule: "Host(`sip.ravenhelm.test`)"
+      service: sip-ui-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    sip-api:
+      rule: "Host(`sip-api.ravenhelm.test`)"
+      service: sip-api-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    sip-langgraph:
+      rule: "Host(`sip-langgraph.ravenhelm.test`)"
+      service: sip-langgraph-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
   # ==========================================================================
   # SERVICES (host.docker.internal points to host machine)
   # ==========================================================================
@@ -352,6 +514,10 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:2024"
+    norns-workqueue-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8050"
     
     hlidskjalf-ui-svc:
       loadBalancer:
@@ -496,3 +662,54 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:7475"
+
+    mcp-gitlab-svc:
+      loadBalancer:
+        serversTransport: mcp-gitlab-transport
+        servers:
+          - url: "https://host.docker.internal:9400"
+
+    # Work Projects (M2C Demo)
+    m2c-ui-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-visualizer:3000"
+    
+    m2c-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-backend:4000"
+    
+    m2c-n8n-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-n8n:5678"
+    
+    m2c-redpanda-console-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-redpanda-console:8080"
+    saaa-nginx-svc:
+      loadBalancer:
+        servers:
+          - url: "http://saaa-nginx:8080"
+    sip-ui-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3207"
+
+    sip-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8207"
+
+    sip-langgraph-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8208"
+
+    # External Model Server
+    model-server-svc:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.50.26:6701"

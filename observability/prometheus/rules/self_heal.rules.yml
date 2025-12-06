@@ -1,0 +1,93 @@
+groups:
+  - name: self-heal
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job!~"prometheus|alertmanager"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} endpoint is unreachable'
+          description: >
+            Prometheus has not scraped {{ $labels.instance }} (job={{ $labels.job }})
+            for at least one minute. Check container health, Traefik routing, and SPIFFE certificates.
+          runbook: https://gitlab.ravenhelm.test/root/hlidskjalf/-/blob/main/docs/runbooks/RUNBOOK-024-add-shared-service.md
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (job) (rate(http_requests_total[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} is returning ≥1% HTTP 5xx responses'
+          description: >
+            Over the last five minutes {{ $labels.job }} has had a 5xx error rate above 1%.
+            Inspect recent deployments and check Loki logs for stack traces.
+          runbook: https://gitlab.ravenhelm.test/root/hlidskjalf/-/blob/main/docs/runbooks/RUNBOOK-007-observability-setup.md
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 2.5
+        for: 5m
+        labels:
+          severity: warning
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} p95 latency above 2.5s'
+          description: >
+            95th percentile response time for {{ $labels.job }} exceeded 2.5s for five minutes.
+            Review workload saturation and downstream dependency health.
+          runbook: https://gitlab.ravenhelm.test/root/hlidskjalf/-/blob/main/docs/architecture/SELF_HEALING_PIPELINE.md
+
+      - alert: HighCPU
+        expr: |
+          sum by (job) (rate(process_cpu_seconds_total[5m])) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} CPU usage above 80%'
+          description: >
+            Process CPU consumption for {{ $labels.job }} has been above 80% of a core for 10 minutes.
+            Consider scaling the service or investigating runaway workloads.
+          runbook: https://gitlab.ravenhelm.test/root/hlidskjalf/-/blob/main/docs/runbooks/RUNBOOK-007-observability-setup.md
+
+      - alert: HighMemory
+        expr: |
+          process_resident_memory_bytes > 1.5e9
+        for: 10m
+        labels:
+          severity: warning
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} resident memory above 1.5 GiB'
+          description: >
+            The process backing {{ $labels.job }} is consuming more than 1.5 GiB of resident memory.
+            Inspect heap allocations or restart the service if necessary.
+          runbook: https://gitlab.ravenhelm.test/root/hlidskjalf/-/blob/main/docs/runbooks/RUNBOOK-007-observability-setup.md
+
+      - alert: ContainerRestarting
+        expr: |
+          changes(process_start_time_seconds[1h]) > 2
+        labels:
+          severity: warning
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: '{{ $labels.job }} restarted more than twice in the last hour'
+          description: >
+            The monitored process for {{ $labels.job }} has restarted frequently. Check Docker health
+            checks, Autoheal, or application crash logs.
+          runbook: https://gitlab.ravenhelm.test/root/hlidskjalf/-/blob/main/docs/runbooks/RUNBOOK-024-add-shared-service.md
+

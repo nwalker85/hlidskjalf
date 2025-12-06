@@ -16,6 +16,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+import os
+
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -95,7 +97,12 @@ class MuninnStore:
         self.database_url = database_url
         self.store = store
         self.embedding_model = embedding_model
-        self.ollama_base_url = ollama_base_url or "http://ollama:11434"
+        # Prefer env override so containers can talk to host-based Ollama
+        self.ollama_base_url = (
+            ollama_base_url
+            or os.environ.get("OLLAMA_BASE_URL")
+            or "http://ollama:11434"
+        )
         self.use_ollama = use_ollama
         
         # Local index for fast lookups

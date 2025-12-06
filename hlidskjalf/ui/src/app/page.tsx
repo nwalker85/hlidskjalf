@@ -24,6 +24,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import { NornsChat } from "@/components/NornsChat";
+import { ObservabilityWidget } from "@/components/observability";
 
 // The Nine Realms with their characteristics
 const REALMS = [
@@ -145,6 +146,11 @@ export default function HlidskjalfDashboard() {
             icon={Activity}
             color="text-unhealthy"
           />
+        </div>
+
+        {/* Observability Stream */}
+        <div className="mb-8">
+          <ObservabilityWidget />
         </div>
 
         {/* Nine Realms Grid */}

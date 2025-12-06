@@ -17,7 +17,7 @@ services:
   #       condition: service_healthy
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   gitlab:
     image: gitlab/gitlab-ce:latest
@@ -25,6 +25,7 @@ services:
     hostname: gitlab.ravenhelm.test
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
+      - "norns.ravenhelm.test:host-gateway"
     entrypoint:
       - /bin/sh
       - -c
@@ -63,6 +64,14 @@ services:
 
         # Time zone
         gitlab_rails['time_zone'] = 'America/New_York'
+
+        # Allow hooks to talk to local network (Traefik/Bifrost)
+        gitlab_rails['allow_requests_to_local_network_from_system_hooks'] = true
+        gitlab_rails['allow_requests_to_local_network_from_web_hooks_and_services'] = true
+        gitlab_rails['allow_local_requests_from_system_hooks'] = true
+        gitlab_rails['allow_local_requests_from_web_hooks_and_services'] = true
+        gitlab_rails['outbound_local_requests_allowlist'] = ['norns.ravenhelm.test']
+        gitlab_rails['webhook_allowed_ips'] = ['192.168.65.254']
 
         # Zitadel SSO (OpenID Connect)
         gitlab_rails['omniauth_enabled'] = true
@@ -115,7 +124,7 @@ services:
       start_period: 300s  # GitLab takes a while to start
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   gitlab-runner:
     image: gitlab/gitlab-runner:latest
@@ -128,7 +137,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LOCALSTACK - AWS Services Emulation
@@ -156,7 +165,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
 
   # =========================================================================
@@ -174,7 +183,7 @@ services:
   #     - "8889:8889"   # Prometheus exporter metrics
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Prometheus (Metrics)
@@ -195,7 +204,7 @@ services:
       - "9090:9090"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Loki (Logs)
@@ -211,7 +220,7 @@ services:
       - "3100:3100"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Alloy (Unified Log/Metric/Trace Collector)
@@ -239,7 +248,7 @@ services:
       - tempo
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Tempo (Traces)
@@ -257,7 +266,7 @@ services:
       - "9095:9095"   # Tempo gRPC
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Grafana (Dashboards)
@@ -306,7 +315,7 @@ services:
       - tempo
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Alertmanager
@@ -324,7 +333,7 @@ services:
       - "9093:9093"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - nginx for observe.ravenhelm.test
@@ -343,7 +352,7 @@ services:
   #     - prometheus
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # EVENT PLANE - Redpanda (Kafka-compatible)
@@ -380,7 +389,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - Redpanda Console (UI)
@@ -409,7 +418,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - nginx for events.ravenhelm.test
@@ -427,7 +436,7 @@ services:
   #     - redpanda-console
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # ZERO TRUST - SPIRE Server (Workload Identity)
@@ -450,7 +459,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ZERO TRUST - SPIRE Agent (Workload Attestation)
@@ -482,7 +491,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # HLIÐSKJÁLF - Odin's High Seat (Control Plane)
@@ -500,9 +509,10 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/hlidskjalf
       - REDIS_URL=rediss://:ravenhelm-redis-dev-password@redis:6379/2?ssl_cert_reqs=none
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
       - SPIRE_AGENT_SOCKET=/tmp/spire-agent/public/api.sock
       - TRUST_DOMAIN=ravenhelm.local
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       # The Norns - AI Agent
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - NORNS_MODEL=gpt-4o
@@ -526,7 +536,7 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   hlidskjalf-ui:
     build:
@@ -541,6 +551,7 @@ services:
       - NEXT_PUBLIC_API_URL=https://hlidskjalf-api.ravenhelm.test
       - NEXT_PUBLIC_LANGGRAPH_API_URL=https://norns.ravenhelm.test
       - NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID=norns
+      - BACKEND_URL=http://hlidskjalf:8900
       # Internal Docker URL for server-side API calls
       - LANGGRAPH_API_URL=http://langgraph:2024
       # NextAuth Zitadel SSO (Server-side OIDC)
@@ -554,6 +565,7 @@ services:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
+      - "hlidskjalf-api.ravenhelm.test:host-gateway"
     ports:
       - "3900:3900"
     depends_on:
@@ -561,7 +573,70 @@ services:
       - langgraph
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
+
+  # =========================================================================
+  # MCP SERVER - GitLab automation via MCP
+  # =========================================================================
+  mcp-server-gitlab:
+    build:
+      context: ./services/mcp-server-gitlab
+    container_name: gitlab-sre-mcp-gitlab
+    user: "1001:1001"
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=mcp"
+      - "ravenhelm.workload=gitlab"
+    environment:
+      - GITLAB_BASE_URL=https://gitlab.ravenhelm.test
+      - GITLAB_API_URL=http://gitlab
+      - GITLAB_PROJECT_PATH=ravenhelm/hlidskjalf
+      - GITLAB_VERIFY_SSL=false
+      - GITLAB_MCP_SECRET_NAME=ravenhelm/dev/gitlab/mcp_service
+      - LOCALSTACK_ENDPOINT=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - MCP_SERVICE_PORT=9400
+      - TLS_REQUIRE_CLIENT_CERT=true
+      - REQUESTS_CA_BUNDLE=/certs/mkcert-ca.crt
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "9400:9400"
+    volumes:
+      - mcp_gitlab_certs:/run/spire/certs:ro
+      - ./ravenhelm-proxy/config/certs/mkcert-ca.crt:/certs/mkcert-ca.crt:ro
+    depends_on:
+      localstack:
+        condition: service_healthy
+      mcp-gitlab-spiffe-helper:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Sidecar: SPIFFE Helper for MCP GitLab certificates
+  mcp-gitlab-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-mcp-gitlab-spiffe-helper
+    user: "1001:1001"
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=mcp-gitlab"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"
+    volumes:
+      - ./config/spiffe-helper/mcp-gitlab-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - mcp_gitlab_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
 
   # =========================================================================
   # SHARED DATABASE - PostgreSQL + pgvector (Muninn's canonical truth)
@@ -606,7 +681,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Sidecar: SPIFFE Helper for PostgreSQL certificates
   postgres-spiffe-helper:
@@ -628,7 +703,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # HUGINN'S WIND - NATS JetStream (fast, low-latency state transport)
@@ -660,7 +735,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Sidecar: SPIFFE Helper for NATS certificates
   nats-spiffe-helper:
@@ -681,7 +756,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SHARED CACHE - Redis for platform services
@@ -713,7 +788,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Sidecar: SPIFFE Helper for Redis certificates
   redis-spiffe-helper:
@@ -735,7 +810,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LLM OBSERVABILITY - LangFuse (LangGraph/LangChain tracing)
@@ -768,7 +843,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LLM OBSERVABILITY - Phoenix (Arize) for embeddings & RAG debugging
@@ -784,7 +859,7 @@ services:
       - "6006:6006"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SECRETS - OpenBao (Vault fork)
@@ -817,7 +892,7 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # IDENTITY - Zitadel (SSO / OAuth 2.1 / OIDC)
@@ -868,7 +943,7 @@ services:
       test: ["NONE"]
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ZERO-TRUST - OAuth2-Proxy (Forward Auth for Traefik)
@@ -914,13 +989,13 @@ services:
     ports:
       - "4180:4180"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4180/ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
       retries: 3
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Nginx proxy for zitadel.ravenhelm.test
   # DISABLED - Traefik handles zitadel.ravenhelm.test
@@ -936,7 +1011,7 @@ services:
   #     - zitadel
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # SECRETS - nginx for vault.ravenhelm.test
@@ -954,7 +1029,7 @@ services:
   #     - openbao
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # AUTOMATION - n8n (Workflow Automation)
@@ -985,7 +1060,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -999,6 +1074,8 @@ services:
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:latest
     container_name: gitlab-sre-weaviate
+    profiles:
+      - docling
     command:
       - --host
       - 0.0.0.0
@@ -1028,7 +1105,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EMBEDDINGS - Sentence Transformers via HuggingFace TEI
@@ -1037,6 +1114,8 @@ services:
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
     container_name: gitlab-sre-embeddings
+    profiles:
+      - docling
     command:
       - --model-id
       - sentence-transformers/all-MiniLM-L6-v2
@@ -1054,7 +1133,7 @@ services:
       start_period: 120s  # Model download can take time
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # RERANKER - Cross-Encoder for result reranking
@@ -1062,6 +1141,8 @@ services:
   reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
     container_name: gitlab-sre-reranker
+    profiles:
+      - docling
     command:
       - --model-id
       - BAAI/bge-reranker-base
@@ -1079,7 +1160,7 @@ services:
       start_period: 120s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # DOCLING - Document Processing (IBM Research)
@@ -1088,6 +1169,8 @@ services:
   docling:
     image: ds4sd/docling-serve:latest
     container_name: gitlab-sre-docling
+    profiles:
+      - docling
     ports:
       - "8087:5000"  # Docling API
     volumes:
@@ -1102,7 +1185,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -1134,7 +1217,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # GRAPH DB - Neo4j (Enterprise-grade, APOC/GDS plugins)
@@ -1163,7 +1246,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -1191,7 +1274,7 @@ services:
     volumes:
       - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
     environment:
-      LIVEKIT_KEYS: "${LIVEKIT_KEYS:-devkey:secret}"
+      LIVEKIT_KEYS: "${LIVEKIT_KEYS:-devkey: secret}"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:7880"]
       interval: 30s
@@ -1200,7 +1283,7 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LANGGRAPH - Norns Agent Server
@@ -1230,7 +1313,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
     # Uncomment for GPU support:
     # deploy:
     #   resources:
@@ -1274,7 +1357,7 @@ services:
       start_period: 300s  # Models take time to load
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
     profiles:
       - huggingface  # Only start with: docker compose --profile huggingface up
     # Uncomment for GPU support (recommended for 14B):
@@ -1312,7 +1395,7 @@ services:
       start_period: 300s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
     profiles:
       - huggingface  # Only start with: docker compose --profile huggingface up
     # Uncomment for GPU support:
@@ -1343,7 +1426,8 @@ services:
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
       - REDIS_URL=rediss://:ravenhelm-redis-dev-password@redis:6379?ssl_cert_reqs=none
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/hlidskjalf
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
@@ -1371,7 +1455,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
 volumes:
   gitlab_config:
@@ -1391,6 +1475,7 @@ volumes:
   redis_certs:  # SPIRE certificates for Redis
   nats_data:
   nats_certs:  # SPIRE certificates for NATS
+  mcp_gitlab_certs:  # SPIRE certificates for MCP GitLab server
   prometheus_data:
   loki_data:
   alloy_data:
@@ -1412,9 +1497,6 @@ volumes:
   neo4j_plugins:
 
 networks:
-  gitlab-network:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.88.0.0/16
+  platform_net:
+    external: true
+    name: platform_net

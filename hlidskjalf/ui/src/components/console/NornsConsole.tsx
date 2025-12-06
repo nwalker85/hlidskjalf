@@ -8,8 +8,9 @@ import { ControlSurface } from "./ControlSurface";
 import { LLMConfigModal } from "@/components/llm-config";
 import { cn } from "@/lib/utils";
 import { useStreamContext } from "@/providers/Stream";
-import { useQueryState } from "nuqs";
 import { Settings, Cpu } from "lucide-react";
+import { useNornsSession } from "@/providers/NornsSessionProvider";
+import { toast } from "sonner";
 
 // Pipeline stage definitions
 const PIPELINE_STAGES = [
@@ -35,7 +36,8 @@ interface NornsConsoleProps {
 export function NornsConsole({ children }: NornsConsoleProps) {
   // Get the actual stream context
   const stream = useStreamContext();
-  const [threadId] = useQueryState("threadId");
+  const { config, shareLink } = useNornsSession();
+  const threadId = config?.threadId ?? null;
   
   // LLM Configuration modal
   const [showLLMConfig, setShowLLMConfig] = useState(false);
@@ -66,6 +68,25 @@ export function NornsConsole({ children }: NornsConsoleProps) {
   // Derive connection status from stream
   const isConnected = threadId !== null || stream.messages.length > 0;
   const isStreaming = stream.isLoading;
+  const handleCopySessionLink = useCallback(async () => {
+    try {
+      const link = await shareLink();
+      if (!link) {
+        toast.error("Unable to generate link", {
+          description: "Session configuration is missing.",
+        });
+        return;
+      }
+      await navigator.clipboard.writeText(link);
+      toast.success("Session link copied");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to copy session link", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }, [shareLink]);
+
 
   // Enhanced event logging helper
   const logEvent = useCallback((
@@ -436,6 +457,7 @@ export function NornsConsole({ children }: NornsConsoleProps) {
               onEndSession={handleEndSession}
               onClearHistory={handleClearHistory}
               onDumpState={handleDumpState}
+            onShareLink={handleCopySessionLink}
               metrics={metrics}
             />
             

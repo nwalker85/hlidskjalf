@@ -1,0 +1,24 @@
+---
+description: Shared platform baseline for all Ravenhelm/Hliðskjálf projects.
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+## Shared services live on one fabric
+- `platform_net` (`docker network create --driver bridge --subnet 10.10.0.0/24 platform_net`) is the canonical bridge for Postgres, Zitadel, Redis, NATS, LocalStack, GitLab, LangGraph/Norns, Bifrost, Traefik, and any management/control-plane workloads. Declare it as `external: true` in every compose project (see `/Users/nwalker/Development/hlidskjalf/docker-compose.yml` and `docker-compose-backup.yml`).
+- Run `/Users/nwalker/Development/hlidskjalf/scripts/create_traefik_networks.sh` before bringing up a new stack to guarantee the shared networks exist with the correct CIDRs. Do **not** recreate ad-hoc bridges such as `gitlab-network`.
+- When authoring new services (even in other repos), mount the project volumes under the `ravenhelm` user (UID/GID 1001) and align with `docs/runbooks/RUNBOOK-005-file-ownership-permissions.md`.
+
+## Shared stateful backends
+- Reuse the already-running Postgres, Redis, NATS, Zitadel, and LocalStack instances instead of launching duplicates. Examples for connection strings live in `hlidskjalf/src/core/config.py` and `hlidskjalf/src/norns/subagent_spawner.py`.
+- Register new TCP ports in `/Users/nwalker/Development/hlidskjalf/config/port_registry.yaml` and keep the descriptions aligned with the runbook/catalog entries.
+- Secrets belong in LocalStack Secrets Manager (seed script: `/Users/nwalker/Development/hlidskjalf/localstack/init/init-aws.sh`). Reference secrets by name (e.g., `ravenhelm/dev/gitlab/mcp_service`) rather than hard-coding credentials or `.env` values.
+
+## Traefik & shared ingress
+- Traefik (`/Users/nwalker/Development/hlidskjalf/ravenhelm-proxy/docker-compose-traefik.yml`) is the single ingress. Every HTTP workload—whether defined here or in another project—must expose itself via Traefik labels *and* add routers/middlewares/services in `/Users/nwalker/Development/hlidskjalf/ravenhelm-proxy/dynamic.yml`.
+- New services should follow `docs/runbooks/RUNBOOK-024-add-shared-service.md` (service definition + port registry + certificates) and `docs/runbooks/ravenhelm-traefik-autodiscovery.md` (labels + routers). Do not publish separate nginx/caddy sidecars.
+
+## SPIFFE/SPIRE and mTLS
+- All long-lived workloads must obtain SPIRE identities using the helper configs under `/Users/nwalker/Development/hlidskjalf/config/spiffe-helper/`. Copy/extend those configs when adding services in other repos, and mount `/run/spire/certs` read-only via a named volume.
+- When Traefik forwards to mTLS-only backends, wire a `serversTransport` entry in `dynamic.yml` with the SPIRE bundle and service SVIDs (see `mcp-gitlab-transport` as the template).

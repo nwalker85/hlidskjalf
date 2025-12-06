@@ -1,0 +1,25 @@
+---
+description: Core operating context for the Hliðskjálf / Ravenhelm monorepo.
+globs:
+  - "**/*"
+alwaysApply: true
+---
+# System & Architecture
+- Treat Traefik (`ravenhelm-proxy`) as the single ingress. Add new routers/services via `docs/runbooks/RUNBOOK-024-add-shared-service.md` and the port registry (`config/port_registry.yaml`) instead of ad-hoc proxies.
+- All services run as the `ravenhelm` user (UID/GID 1001). Never reintroduce `root` ownership hacks—follow `scripts/init-platform.sh` + `docs/runbooks/RUNBOOK-005-file-ownership-permissions.md`.
+- SPIRE-based mTLS is mandatory for internal traffic (Postgres, Redis, NATS, MCP, etc.). When adding workloads, register SVIDs and use `spiffe-helper` configs under `config/spiffe-helper/`.
+
+# Identity & Secrets
+- Identities flow through Zitadel. For services that support native OIDC (Grafana, GitLab, Hliðskjálf UI, Langfuse, Redpanda Console) use Zitadel clients from `.zitadel-apps.env` / LocalStack secrets rather than inlining secrets.
+- All runtime secrets live in LocalStack Secrets Manager. See `localstack/init/init-aws.sh` for canonical names (e.g., `ravenhelm/dev/gitlab/mcp_service`, `ravenhelm/dev/gitlab/webhook/norns`, `ravenhelm/dev/postgres/credentials`). Fetch via the provided secrets clients instead of `.env`.
+- For GitLab automation use the `Skuld` PAT stored in `ravenhelm/dev/gitlab/mcp_service`. Never commit PATs, webhook tokens, or NextAuth secrets to git.
+
+# Work Management & Knowledge
+- GitLab issues are the source of truth. Apply one `type::` label, one `workflow::` label, and relevant `area::` / `okr::` trims. Reference `docs/process/AGILE_OPERATING_MODEL.md` for taxonomy, board usage, and OKR slices.
+- The Norns queue only triggers when issues have both `actor::norns` and `workflow::ready`. Webhook + polling details are documented in `docs/runbooks/RUNBOOK-025-norns-work-queue.md`.
+- Before creating tooling or runbooks, check the catalog (`docs/wiki/Runbook_Catalog.md`) and hook into the existing numbering (`RUNBOOK-0xx`).
+
+# Observability & Ops
+- Logs/metrics/traces route through Grafana Alloy → Loki/Prometheus/Tempo. Tap into those pipelines instead of adding sidecar collectors.
+- When adding dashboards, use the provisioning tree (`observability/grafana/provisioning/dashboards/json/`) and explicit datasource UIDs (`observability/grafana/provisioning/datasources/datasources.yml`). Restart Grafana after changes.
+- For alerting/self-healing work, build on Phase 6 plan in `PROJECT_PLAN.md` and keep the `docs/LESSONS_LEARNED.md` section updated with new operational gotchas.

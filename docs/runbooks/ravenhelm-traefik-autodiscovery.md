@@ -92,7 +92,7 @@ Model each “subnet” as a custom Docker bridge network.
 
 ```bash
 docker network create --driver bridge --subnet 10.10.0.0/24 m2c_net
-docker network create --driver bridge --subnet 10.20.0.0/24 gitlab_net
+docker network create --driver bridge --subnet 10.10.0.0/24 platform_net
 ```
 
 - **Option B – Declare in `edge/docker-compose.yml`**:
@@ -104,7 +104,7 @@ networks:
     ipam:
       config:
         - subnet: 10.0.10.0/24
-  gitlab_net:
+  platform_net:
     external: true
   m2c_net:
     external: true
@@ -139,7 +139,7 @@ services:
       - "./certs:/certs:ro"
     networks:
       - edge
-      - gitlab_net
+      - platform_net
       - m2c_net
 
 networks:
@@ -148,7 +148,7 @@ networks:
     ipam:
       config:
         - subnet: 10.0.10.0/24
-  gitlab_net:
+  platform_net:
     external: true
   m2c_net:
     external: true
@@ -213,7 +213,7 @@ services:
         external_url "https://gitlab.ravenhelm.test"
     shm_size: "256m"
     networks:
-      - gitlab_net
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.gitlab.rule=Host(`gitlab.ravenhelm.test`)"
@@ -222,7 +222,7 @@ services:
       - "traefik.http.services.gitlab.loadbalancer.server.port=80"
 
 networks:
-  gitlab_net:
+  platform_net:
     external: true
 ```
 

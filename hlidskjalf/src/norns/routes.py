@@ -2,6 +2,7 @@
 API routes for conversing with the Norns
 """
 
+import json
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -10,8 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.norns.agent import NornsAgent
+from src.norns.tools_api import get_tools_router
 
 router = APIRouter(prefix="/norns", tags=["Norns"])
+
+# Include tools introspection sub-router
+router.include_router(get_tools_router())
 
 
 # =============================================================================
@@ -152,4 +157,80 @@ async def get_norn_graph_info():
         "api_url": settings.NORNS_GRAPH_API_URL,
         "assistant_id": settings.NORNS_GRAPH_ASSISTANT_ID,
     }
+
+
+@router.get("/observability/stream")
+async def stream_observability_events():
+    """
+    Stream real-time observability events from the platform.
+    
+    This endpoint streams coordination events from Kafka/Redpanda
+    to the frontend for real-time monitoring.
+    """
+    settings = get_settings()
+    
+    async def event_stream():
+        """Stream Kafka events to frontend"""
+        try:
+            from aiokafka import AIOKafkaConsumer
+            
+            # Topics to monitor
+            topics = [
+                "norns.squad.coordination",
+                "norns.task.status", 
+                "norns.health.status",
+                "llm.config.changes",
+            ]
+            
+            consumer = AIOKafkaConsumer(
+                *topics,
+                bootstrap_servers=settings.KAFKA_BOOTSTRAP,
+                group_id=f"observability-stream-{id(event_stream)}",
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')) if m else {},
+                auto_offset_reset='latest'
+            )
+            
+            await consumer.start()
+            
+            yield f"data: {json.dumps({'type': 'connected', 'message': 'Observing platform events...'})}\n\n"
+            
+            try:
+                async for msg in consumer:
+                    event = msg.value or {}
+                    
+                    log_entry = {
+                        "type": "event",
+                        "topic": msg.topic,
+                        "event_type": event.get("event_type", msg.topic.split(".")[-1]),
+                        "source": event.get("source_agent", event.get("source", "system")),
+                        "target": event.get("target_agent"),
+                        "timestamp": event.get("timestamp"),
+                        "payload": event,
+                    }
+                    
+                    yield f"data: {json.dumps(log_entry)}\n\n"
+                    
+            finally:
+                await consumer.stop()
+                
+        except ImportError:
+            # aiokafka not installed - return mock events
+            import asyncio
+            yield f"data: {json.dumps({'type': 'info', 'message': 'Kafka client not available, using mock events'})}\n\n"
+            while True:
+                await asyncio.sleep(5)
+                yield f"data: {json.dumps({'type': 'heartbeat', 'message': 'Stream alive'})}\n\n"
+                
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 

@@ -38,6 +38,16 @@ providers:
     watch: true
 
 # Certificate Resolvers & TLS
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: nathan@ravenhelm.dev
+      storage: /letsencrypt/acme.json
+      # Production Let's Encrypt (browser-trusted certificates)
+      # Staging was: https://acme-staging-v02.api.letsencrypt.org/directory
+      httpChallenge:
+        entryPoint: web
+
 tls:
   options:
     default:

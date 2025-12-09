@@ -50,6 +50,8 @@ DATA_VOLUMES=(
     "langfuse_data"
     "openbao_data"
     "zitadel_data"
+    "n8n_data"
+    "firecrawl_data"
 )
 
 # Function to initialize a volume

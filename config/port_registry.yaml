@@ -36,7 +36,7 @@ ranges:
     start: 9000
     end: 9999
     description: Prometheus, exporters, metrics
-reserved:
+ports:
 - port: 5432
   service: postgres
   protocol: tcp
@@ -166,6 +166,33 @@ reserved:
   service: ravenhelm-proxy
   protocol: tcp
   description: HTTPS termination
+- port: 4180
+  service: oauth2-proxy
+  protocol: tcp
+  description: OAuth2-Proxy forward auth (dev .test)
+- port: 4181
+  service: oauth2-proxy-staging
+  protocol: tcp
+  description: OAuth2-Proxy forward auth (staging .dev)
+- port: 4182
+  service: oauth2-proxy-prod
+  protocol: tcp
+  description: OAuth2-Proxy forward auth (production .ai - future)
+  note: Reserved for production environment
+- port: 6701
+  service: model-server-http
+  protocol: tcp
+  description: External model server HTTP backend (Ollama/LLM endpoint)
+  host: 192.168.50.26
+  note: Internal HTTP service, proxied by Nginx on 6702
+- port: 6702
+  service: model-server-https
+  protocol: tcp
+  description: External model server HTTPS proxy (Nginx with mTLS)
+  host: 192.168.50.26
+  domain: models.ravenhelm.dev
+  security: mTLS (SPIRE via Nginx client cert validation)
+  note: Nginx proxy terminating mTLS, forwarding to 6701
 # ── m2c-demo isolated infrastructure ──────────────────────────────────────────
 - port: 5433
   service: m2c-demo-postgres

@@ -5,8 +5,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List
 
-from src.api.llm_config import get_available_providers
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+
 from src.core.config import get_settings
+from src.services.llm_providers import LLMProviderService
 from src.memory.events.kafka_producer import KafkaEventProducer
 from src.norns.squad_schema import Topics
 
@@ -16,7 +18,7 @@ settings = get_settings()
 
 class LLMModelWatcher:
     """
-    Periodically checks installed LLM models (currently via Ollama)
+    Periodically checks configured LLM providers from the database
     and emits `llm.providers.updated` events whenever the inventory changes.
     """
 
@@ -32,6 +34,19 @@ class LLMModelWatcher:
         self._producer = KafkaEventProducer(
             bootstrap_servers=kafka_bootstrap or settings.KAFKA_BOOTSTRAP,
             client_id="llm-model-watcher",
+        )
+        
+        # Database connection for provider queries
+        self._engine = create_async_engine(
+            str(settings.DATABASE_URL),
+            echo=False,
+            pool_size=2,
+            max_overflow=0,
+        )
+        self._session_factory = async_sessionmaker(
+            self._engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
         )
 
     async def start(self) -> None:
@@ -56,6 +71,7 @@ class LLMModelWatcher:
                 pass
             self._task = None
         await self._producer.close()
+        await self._engine.dispose()
         logger.info("LLMModelWatcher stopped")
 
     async def _run(self) -> None:
@@ -67,19 +83,36 @@ class LLMModelWatcher:
             await asyncio.sleep(self._poll_interval)
 
     async def _poll_once(self) -> None:
-        providers = await get_available_providers()
-        snapshot: Dict[str, List[str]] = {
-            provider.id: sorted(provider.models) for provider in providers
-        }
+        async with self._session_factory() as session:
+            provider_service = LLMProviderService(db_session=session)
+            providers = await provider_service.list_providers(enabled_only=True)
+            
+            # Build snapshot of provider IDs to model names
+            snapshot: Dict[str, List[str]] = {
+                str(provider.id): sorted([m.model_name for m in provider.models])
+                for provider in providers
+            }
 
-        if snapshot != self._last_snapshot:
-            self._last_snapshot = snapshot
-            await self._emit_event(providers)
+            if snapshot != self._last_snapshot:
+                self._last_snapshot = snapshot
+                await self._emit_event(providers)
 
     async def _emit_event(self, providers) -> None:
+        # Convert SQLAlchemy models to dicts for serialization
+        provider_dicts = [
+            {
+                "id": str(provider.id),
+                "name": provider.name,
+                "provider_type": provider.provider_type.value,
+                "enabled": provider.enabled,
+                "models": [m.model_name for m in provider.models],
+            }
+            for provider in providers
+        ]
+        
         event = {
             "type": "llm.providers.updated",
-            "providers": [provider.model_dump() for provider in providers],
+            "providers": provider_dicts,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 

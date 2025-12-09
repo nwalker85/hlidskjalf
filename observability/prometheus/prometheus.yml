@@ -13,6 +13,7 @@ alerting:
 
 rule_files:
   - "rules/self_heal.rules.yml"
+  - "rules/frontend-alerts.yml"
 
 scrape_configs:
   # Prometheus self-monitoring

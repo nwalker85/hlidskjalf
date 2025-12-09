@@ -47,7 +47,7 @@ services:
     container_name: gitlab-sre-postgres
     user: "1001:1001"  # ravenhelm platform user
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-infrastructure"
       - "ravenhelm.service=postgres"
       - "ravenhelm.workload=postgres"
     environment:
@@ -87,7 +87,7 @@ services:
     image: nats:latest
     container_name: gitlab-sre-nats
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-infrastructure"
       - "ravenhelm.service=nats"
       - "ravenhelm.workload=nats"
     command: 
@@ -116,7 +116,7 @@ services:
     container_name: gitlab-sre-redis
     user: "1001:1001"  # ravenhelm platform user
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-infrastructure"
       - "ravenhelm.service=redis"
       - "ravenhelm.workload=redis"
     command: redis-server /etc/redis/redis.conf

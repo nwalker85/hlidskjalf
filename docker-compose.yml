@@ -24,6 +24,7 @@ services:
     container_name: gitlab-sre-gitlab
     hostname: gitlab.ravenhelm.test
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
       - "norns.ravenhelm.test:host-gateway"
     entrypoint:
@@ -275,6 +276,7 @@ services:
     image: grafana/grafana:latest
     container_name: gitlab-sre-grafana
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
@@ -289,16 +291,17 @@ services:
       - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${GRAFANA_OIDC_CLIENT_SECRET}
       # Include role scope for Zitadel project roles
       - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email urn:zitadel:iam:org:project:roles
-      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.test/oauth/v2/authorize
-      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.test/oauth/v2/token
-      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.test/oidc/v1/userinfo
+      # Updated to use .dev (staging) Zitadel instance
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.dev/oauth/v2/authorize
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.dev/oauth/v2/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.dev/oidc/v1/userinfo
       - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
       # Role mapping from Zitadel project roles
       # Zitadel returns roles as: {"urn:zitadel:iam:org:project:roles": {"admin": {"349394492048015386": "Ravenhelm Platform"}}}
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'admin') && 'Admin' || contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'operator') && 'Editor' || 'Viewer'
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
       - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
-      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=false
       # Auto-create Ravenhelm org
       - GF_USERS_AUTO_ASSIGN_ORG=true
       - GF_USERS_AUTO_ASSIGN_ORG_ID=1
@@ -377,8 +380,10 @@ services:
     ports:
       - "18081:18081"  # Schema Registry
       - "18082:18082"  # Pandaproxy (REST)
-      - "19092:19092"  # Kafka API
-      - "19644:9644"   # Admin API
+      - "9092:9092"    # Kafka API (standard port for external access)
+      - "19092:19092"  # Kafka API (alt port)
+      - "9644:9644"    # Admin API (standard port)
+      - "19644:9644"   # Admin API (alt port)
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
@@ -398,6 +403,7 @@ services:
     image: docker.redpanda.com/redpandadata/console:latest
     container_name: gitlab-sre-redpanda-console
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - KAFKA_BROKERS=redpanda:9092
@@ -523,7 +529,8 @@ services:
       - ./hlidskjalf/src:/app/src:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
-      - "8900:8900"
+      - "8000:8900"  # Expose internal 8900 as 8000 (port registry standard)
+      - "8900:8900"  # Keep 8900 for backward compatibility
     depends_on:
       postgres:
         condition: service_healthy
@@ -555,16 +562,20 @@ services:
       # Internal Docker URL for server-side API calls
       - LANGGRAPH_API_URL=http://langgraph:2024
       # NextAuth Zitadel SSO (Server-side OIDC)
-      - AUTH_ZITADEL_ISSUER=https://zitadel.ravenhelm.test
+      # Multi-environment auth config (detects from NEXTAUTH_URL)
+      # Development: NEXTAUTH_URL=https://hlidskjalf.ravenhelm.test
+      # Staging: NEXTAUTH_URL=https://hlidskjalf.ravenhelm.dev
+      # Production: NEXTAUTH_URL=https://hlidskjalf.ravenhelm.ai
       - AUTH_ZITADEL_CLIENT_ID=${NEXTAUTH_HLIDSKJALF_CLIENT_ID}
       - AUTH_ZITADEL_CLIENT_SECRET=${NEXTAUTH_HLIDSKJALF_CLIENT_SECRET}
-      - NEXTAUTH_URL=https://hlidskjalf.ravenhelm.test
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-https://hlidskjalf.ravenhelm.test}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - AUTH_TRUST_HOST=true
       # Trust self-signed certs in dev (required for Zitadel SSO)
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "hlidskjalf-api.ravenhelm.test:host-gateway"
     ports:
       - "3900:3900"
@@ -819,6 +830,7 @@ services:
     image: langfuse/langfuse:2  # v3 requires ClickHouse
     container_name: gitlab-sre-langfuse
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
@@ -885,11 +897,11 @@ services:
     ports:
       - "8200:8200"
     healthcheck:
-      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8200/v1/sys/health?standbyok=true"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
     networks:
       - platform_net
@@ -920,7 +932,7 @@ services:
       ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: postgres
       ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
       # External domain - standard HTTPS via Traefik ingress
-      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.test
+      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.dev
       ZITADEL_EXTERNALPORT: 443
       ZITADEL_EXTERNALSECURE: "true"
       # First instance setup
@@ -958,7 +970,7 @@ services:
     environment:
       # Zitadel OIDC Configuration
       - OAUTH2_PROXY_PROVIDER=oidc
-      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.test
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.dev
       - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID}
       - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_CLIENT_SECRET}
       # Cookie settings
@@ -988,6 +1000,61 @@ services:
       - "zitadel.ravenhelm.test:host-gateway"
     ports:
       - "4180:4180"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # ZERO-TRUST - OAuth2-Proxy for .dev domain (Staging Environment)
+  # =========================================================================
+  oauth2-proxy-staging:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: gitlab-sre-oauth2-proxy-staging
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=oauth2-proxy-staging"
+      - "ravenhelm.workload=auth"
+      - "ravenhelm.environment=staging"
+    environment:
+      # Zitadel OIDC Configuration (staging environment)
+      # NOTE: Using .test issuer until staging .dev DNS is fully configured, then switch to https://zitadel.ravenhelm.dev
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.dev
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_STAGING_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_STAGING_CLIENT_SECRET}
+      # Cookie settings for staging (.dev) domain
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.ravenhelm.dev
+      - OAUTH2_PROXY_COOKIE_NAME=_ravenhelm_auth_dev
+      # Proxy settings
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4181
+      - OAUTH2_PROXY_REDIRECT_URL=https://auth.ravenhelm.dev/oauth2/callback
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=.ravenhelm.dev
+      # Auth settings
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_SCOPE=openid profile email
+      - OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+      - OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      # Reverse proxy mode for Traefik
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REAL_CLIENT_IP_HEADER=X-Forwarded-For
+      # Skip TLS verification for self-signed certs (needed for staging .dev → dev .test Zitadel fallback)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+      # Skip auth for specific paths
+      - OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/health$|^/ready$|^/metrics$|^/api/health$
+    extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "4181:4181"
     healthcheck:
       test: ["CMD", "/bin/oauth2-proxy", "--version"]
       interval: 1m
@@ -1226,8 +1293,8 @@ services:
     image: neo4j:5-community
     container_name: gitlab-sre-neo4j
     ports:
-      - "7475:7474"   # HTTP (browser) - offset to avoid memgraph conflict
-      - "7688:7687"   # Bolt protocol - offset to avoid memgraph conflict
+      - "7474:7474"   # HTTP (browser)
+      - "7687:7687"   # Bolt protocol
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs

@@ -146,14 +146,14 @@ create_oidc_app() {
 }
 
 # -----------------------------------------------------------------------------
-# Grafana
+# Grafana (supports both .test and .dev environments)
 # -----------------------------------------------------------------------------
 create_oidc_app \
     "Grafana" \
     "OIDC_APP_TYPE_WEB" \
     "OIDC_AUTH_METHOD_TYPE_BASIC" \
-    '["https://grafana.observe.ravenhelm.test/login/generic_oauth"]' \
-    '["https://grafana.observe.ravenhelm.test"]' \
+    '["https://grafana.observe.ravenhelm.test/login/generic_oauth","https://grafana.ravenhelm.test/login/generic_oauth","https://grafana.ravenhelm.dev/login/generic_oauth"]' \
+    '["https://grafana.observe.ravenhelm.test","https://grafana.ravenhelm.test","https://grafana.ravenhelm.dev"]' \
     "GRAFANA_OIDC"
 
 # -----------------------------------------------------------------------------

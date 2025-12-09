@@ -42,9 +42,71 @@ http:
         accessControlAllowOriginList:
           - "*"
         accessControlAllowMethods:
-          - "*"
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+          - PATCH
         accessControlAllowHeaders:
           - "*"
+        accessControlMaxAge: 86400
+        addVaryHeader: true
+
+    # Specific CORS for OTEL endpoints (telemetry from browsers)
+    cors-otel:
+      headers:
+        accessControlAllowOriginList:
+          - "*"
+        accessControlAllowMethods:
+          - POST
+          - OPTIONS
+        accessControlAllowHeaders:
+          - Content-Type
+          - traceparent
+          - tracestate
+          - baggage
+        accessControlMaxAge: 86400
+        addVaryHeader: true
+    
+    cors-ravenhelm:
+      headers:
+        accessControlAllowOriginList:
+          - "https://hlidskjalf.ravenhelm.test"
+          - "https://hlidskjalf.ravenhelm.dev"
+          - "https://hlidskjalf.ravenhelm.ai"
+          - "https://control.ravenhelm.test"
+          - "https://control.ravenhelm.dev"
+          - "https://control.ravenhelm.ai"
+          - "https://norns.ravenhelm.test"
+          - "https://norns.ravenhelm.dev"
+          - "https://grafana.ravenhelm.test"
+          - "https://grafana.ravenhelm.dev"
+        accessControlAllowMethods:
+          - GET
+          - OPTIONS
+          - PUT
+          - POST
+          - DELETE
+          - PATCH
+        accessControlAllowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - Origin
+          - X-Requested-With
+          - X-Auth-Request-User
+          - X-Auth-Request-Email
+          - X-Auth-Request-Access-Token
+          # OpenTelemetry distributed tracing headers
+          - traceparent
+          - tracestate
+          - baggage
+        accessControlExposeHeaders:
+          - X-Auth-Request-User
+          - X-Auth-Request-Email
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 86400
 
     # ==========================================================================
     # ZERO-TRUST: Forward Auth via OAuth2-Proxy
@@ -63,12 +125,36 @@ http:
           - "X-Auth-Request-Access-Token"
           - "Authorization"
 
-    # Chain: secure headers + zero-trust auth
+    # Chain: CORS + secure headers + zero-trust auth
     protected:
       chain:
         middlewares:
+          - cors-ravenhelm
           - secure-headers
           - zero-trust-auth
+
+    # ==========================================================================
+    # ZERO-TRUST AUTH FOR .dev DOMAIN (Staging Environment)
+    # ==========================================================================
+    zero-trust-auth-staging:
+      forwardAuth:
+        address: "http://host.docker.internal:4181/oauth2/auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-Auth-Request-User"
+          - "X-Auth-Request-Email"
+          - "X-Auth-Request-Groups"
+          - "X-Auth-Request-Access-Token"
+          - "Authorization"
+
+    # Chain: secure headers + zero-trust auth for staging (.dev)
+    # Chain: CORS + secure headers + zero-trust auth for staging
+    protected-staging:
+      chain:
+        middlewares:
+          - cors-ravenhelm
+          - secure-headers
+          - zero-trust-auth-staging
 
     # ==========================================================================
     # EXTERNAL MODEL SERVER AUTH
@@ -94,6 +180,15 @@ http:
       certificates:
         - certFile: /run/spire/certs/svid.pem
           keyFile: /run/spire/certs/key.pem
+    
+    # External Model Server with mTLS
+    model-server-transport:
+      rootCAs:
+        - /certs/spire-bundle.pem
+      certificates:
+        - certFile: /run/spire/certs/svid.pem
+          keyFile: /run/spire/certs/key.pem
+      insecureSkipVerify: false  # Enforce cert validation
 
   # ==========================================================================
   # ROUTERS
@@ -103,13 +198,23 @@ http:
     # AUTHENTICATION (Must be PUBLIC - no forward auth)
     # ─────────────────────────────────────────────────────────────────────────
     
-    # OAuth2-Proxy Auth Endpoints
+    # OAuth2-Proxy Auth Endpoints (.test internal)
     oauth2-proxy:
       rule: "Host(`auth.ravenhelm.test`)"
       service: oauth2-proxy-svc
       middlewares:
         - secure-headers
       tls: {}
+      priority: 1000
+
+    # OAuth2-Proxy Auth Endpoints (.dev staging)
+    oauth2-proxy-staging:
+      rule: "Host(`auth.ravenhelm.dev`)"
+      service: oauth2-proxy-staging-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
       priority: 1000
 
     # Traefik Dashboard (protected)
@@ -124,13 +229,15 @@ http:
     # EXTERNAL SERVICES
     # ─────────────────────────────────────────────────────────────────────────
     
-    # External Model Server (ravenhelm.dev:6701)
+    # External Model Server (ravenhelm.dev:6701) with mTLS
     model-server:
       rule: "Host(`models.ravenhelm.dev`)"
       service: model-server-svc
       middlewares:
-        - model-server-protected
-      tls: {}
+        - secure-headers
+        # Note: mTLS auth via SPIRE client cert, not basic auth
+      tls:
+        certResolver: letsencrypt
       priority: 1000
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -155,7 +262,7 @@ http:
         - secure-headers
       tls: {}
 
-    # Hlidskjalf UI (has native NextAuth/Zitadel SSO)
+    # Hlidskjalf UI (has native NextAuth/Zitadel SSO) - .test internal
     hlidskjalf-ui:
       rule: "Host(`hlidskjalf.ravenhelm.test`)"
       service: hlidskjalf-ui-svc
@@ -163,13 +270,36 @@ http:
         - secure-headers
       tls: {}
 
-    # Hlidskjalf API (protected via forward auth)
+    # Hlidskjalf UI - .dev staging
+    hlidskjalf-ui-staging:
+      rule: "Host(`hlidskjalf.ravenhelm.dev`)"
+      service: hlidskjalf-ui-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
+
+    # Hlidskjalf API - .test internal
+    # Note: UI handles Zitadel SSO natively via NextAuth; API trusts UI-authenticated requests
+    # CORS ensures only ravenhelm origins can call the API
     hlidskjalf-api:
       rule: "Host(`hlidskjalf-api.ravenhelm.test`)"
       service: hlidskjalf-api-svc
       middlewares:
-        - protected
+        - cors-ravenhelm
+        - secure-headers
       tls: {}
+
+    # Hlidskjalf API - .dev staging
+    # Note: UI handles Zitadel SSO natively via NextAuth; API trusts UI-authenticated requests
+    hlidskjalf-api-staging:
+      rule: "Host(`hlidskjalf-api.ravenhelm.dev`)"
+      service: hlidskjalf-api-svc
+      middlewares:
+        - cors-ravenhelm
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
 
     # Ollama Local LLM (internal service, CORS for UI tools)
     ollama:
@@ -184,13 +314,22 @@ http:
     # OBSERVABILITY
     # ─────────────────────────────────────────────────────────────────────────
     
-    # Grafana (has native Zitadel SSO)
+    # Grafana (has native Zitadel SSO) - .test internal
     grafana:
       rule: "Host(`grafana.observe.ravenhelm.test`) || Host(`observe.ravenhelm.test`) || Host(`grafana.ravenhelm.test`)"
       service: grafana-svc
       middlewares:
         - secure-headers
       tls: {}
+
+    # Grafana - .dev staging
+    grafana-staging:
+      rule: "Host(`grafana.ravenhelm.dev`)"
+      service: grafana-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
 
     # Protected internal services (no native SSO)
     prometheus:
@@ -240,13 +379,23 @@ http:
         - protected
       tls: {}
 
-    # Identity Provider (PUBLIC - this IS the auth provider)
+    # Identity Provider (PUBLIC - this IS the auth provider) - .test internal
     zitadel:
       rule: "Host(`zitadel.ravenhelm.test`)"
       service: zitadel-svc
       middlewares:
         - secure-headers
       tls: {}
+      priority: 1000
+
+    # Identity Provider - .dev staging
+    zitadel-staging:
+      rule: "Host(`zitadel.ravenhelm.dev`)"
+      service: zitadel-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
       priority: 1000
 
     localstack:
@@ -315,12 +464,24 @@ http:
       tls: {}
 
     # OTLP receiver (via Alloy) - API endpoint, no UI auth needed
+    # CORS is required because browsers send telemetry with tracing headers
+    # Note: No secure-headers middleware - OTEL endpoints handle their own security
     otel:
       rule: "Host(`otel.ravenhelm.test`) || Host(`otel.observe.ravenhelm.test`)"
       service: otel-svc
       middlewares:
-        - secure-headers
+        - cors-otel
       tls: {}
+    
+    # OTLP receiver (staging) - for .dev domain
+    # CORS is required because browsers send telemetry with tracing headers
+    otel-staging:
+      rule: "Host(`otel.ravenhelm.dev`)"
+      service: otel-svc
+      middlewares:
+        - cors-otel
+      tls:
+        certResolver: letsencrypt
 
     # ─────────────────────────────────────────────────────────────────────────
     # REALTIME
@@ -503,11 +664,17 @@ http:
   # SERVICES (host.docker.internal points to host machine)
   # ==========================================================================
   services:
-    # Zero-Trust Auth
+    # Zero-Trust Auth (.test internal)
     oauth2-proxy-svc:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:4180"
+
+    # Zero-Trust Auth (.dev staging)
+    oauth2-proxy-staging-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4181"
 
     # Platform
     norns-svc:
@@ -527,7 +694,7 @@ http:
     hlidskjalf-api-svc:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:8000"
+          - url: "http://host.docker.internal:8900"
 
     ollama-svc:
       loadBalancer:
@@ -708,8 +875,9 @@ http:
         servers:
           - url: "http://host.docker.internal:8208"
 
-    # External Model Server
+    # External Model Server with mTLS
     model-server-svc:
       loadBalancer:
+        serversTransport: model-server-transport
         servers:
-          - url: "http://192.168.50.26:6701"
+          - url: "https://192.168.50.26:6702"  # HTTPS + mTLS via SPIRE (Nginx proxy)

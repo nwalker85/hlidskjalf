@@ -181,6 +181,9 @@ class ConfigLoader:
                     summary["projects_created"] += 1
                     logger.info("Project created", project_id=project_config["id"])
                 
+                # Flush to ensure project exists before adding ports
+                await session.flush()
+                
                 # Sync port allocations
                 ports_created = await self._sync_ports(
                     session,
@@ -188,12 +191,15 @@ class ConfigLoader:
                 )
                 summary["ports_created"] += ports_created
                 
+                # Commit after each project to avoid cascading rollbacks
+                await session.commit()
+                
             except Exception as e:
+                # Rollback this project's changes, continue with next
+                await session.rollback()
                 error_msg = f"Error syncing project {project_config['id']}: {str(e)}"
                 summary["errors"].append(error_msg)
                 logger.error(error_msg, exc_info=True)
-        
-        await session.commit()
         
         logger.info(
             "Configuration sync complete",
@@ -261,7 +267,7 @@ class ConfigLoader:
         port_type: PortType
     ) -> int:
         """Ensure a port allocation exists, create if not"""
-        # Check if exists
+        # Check if this project/service combo exists
         result = await session.execute(
             select(PortAllocation).where(
                 PortAllocation.project_id == project_id,
@@ -275,6 +281,22 @@ class ConfigLoader:
             # Update if port changed
             if existing.port != port:
                 existing.port = port
+            return 0
+        
+        # Check if port is already used by another project
+        result = await session.execute(
+            select(PortAllocation).where(
+                PortAllocation.port == port,
+                PortAllocation.environment == Realm.MIDGARD
+            )
+        )
+        port_in_use = result.scalar_one_or_none()
+        
+        if port_in_use:
+            logger.warning(
+                f"Port {port} already allocated to {port_in_use.project_id}/{port_in_use.service_name}, "
+                f"skipping for {project_id}/{service_name}"
+            )
             return 0
         
         # Create new allocation

@@ -61,7 +61,7 @@ services:
     container_name: gitlab-sre-postgres
     user: "1001:1001"
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=postgres"
       - "ravenhelm.workload=postgres"
     environment:
@@ -101,7 +101,7 @@ services:
     container_name: gitlab-sre-postgres-spiffe-helper
     user: "1001:1001"
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=spiffe-helper"
       - "ravenhelm.workload=postgres"
     entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
@@ -122,7 +122,7 @@ services:
     container_name: gitlab-sre-redis
     user: "1001:1001"
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=redis"
       - "ravenhelm.workload=redis"
     command: redis-server /etc/redis/redis.conf
@@ -149,7 +149,7 @@ services:
     container_name: gitlab-sre-redis-spiffe-helper
     user: "1001:1001"
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=spiffe-helper"
       - "ravenhelm.workload=redis"
     entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
@@ -169,7 +169,7 @@ services:
     image: ollama/ollama:latest
     container_name: gitlab-sre-ollama
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=ollama"
       - "ravenhelm.workload=ai-local"
     ports:
@@ -195,7 +195,7 @@ services:
       dockerfile: Dockerfile
     container_name: gitlab-sre-hlidskjalf
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=api"
       - "ravenhelm.workload=control-plane"
     environment:
@@ -235,7 +235,7 @@ services:
       dockerfile: Dockerfile
     container_name: gitlab-sre-hlidskjalf-ui
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=ui"
       - "ravenhelm.workload=control-plane"
     environment:
@@ -269,7 +269,7 @@ services:
       dockerfile: Dockerfile.langgraph
     container_name: gitlab-sre-langgraph
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-control-plane"
       - "ravenhelm.service=langgraph"
       - "ravenhelm.workload=ai-agent"
     ports:

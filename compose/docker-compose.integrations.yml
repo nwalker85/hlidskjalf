@@ -20,7 +20,7 @@ services:
     container_name: gitlab-sre-mcp-gitlab
     user: "1001:1001"
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-integrations"
       - "ravenhelm.service=mcp"
       - "ravenhelm.workload=gitlab"
     environment:
@@ -53,6 +53,10 @@ services:
   n8n:
     image: n8nio/n8n:latest
     container_name: gitlab-sre-n8n
+    labels:
+      - "ravenhelm.project=hlidskjalf-integrations"
+      - "ravenhelm.service=n8n"
+      - "ravenhelm.workload=workflow"
     environment:
       - N8N_HOST=n8n.ravenhelm.test
       - N8N_PORT=5678
@@ -82,7 +86,7 @@ services:
     image: livekit/livekit-server:latest
     container_name: gitlab-sre-livekit
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-integrations"
       - "ravenhelm.service=livekit"
       - "ravenhelm.workload=voice"
     command:
@@ -105,4 +109,60 @@ services:
     restart: unless-stopped
     networks:
       - platform_net
+
+  # =========================================================================
+  # FIRECRAWL - Web Crawling for LLM-Friendly Document Ingestion
+  # =========================================================================
+  # NOTE: Firecrawl's Docker image is NOT publicly available on Docker Hub.
+  # To use Firecrawl, you must build the image from source:
+  #   git clone https://github.com/mendableai/firecrawl.git
+  #   cd firecrawl && docker build -t firecrawl:local .
+  # Then uncomment the service below and change image to: firecrawl:local
+  #
+  # firecrawl:
+  #   image: firecrawl:local  # Built from https://github.com/mendableai/firecrawl
+  #   container_name: ravenhelm-firecrawl
+  #   labels:
+  #     - "ravenhelm.project=hlidskjalf"
+  #     - "ravenhelm.service=firecrawl"
+  #     - "ravenhelm.workload=document-ingestion"
+  #   ports:
+  #     - "3002:3002"
+  #   environment:
+  #     - PORT=3002
+  #     - NUM_WORKERS=2
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
+  #     - REDIS_URL=redis://redis:6379
+  #     - PLAYWRIGHT_MICROSERVICE_URL=http://playwright:3000
+  #   volumes:
+  #     - firecrawl_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s
+  #   restart: unless-stopped
+  #   networks:
+  #     - platform_net
+  #   depends_on:
+  #     - playwright
+  #
+  # # Playwright service for Firecrawl (headless browser)
+  # playwright:
+  #   image: browserless/chrome:latest
+  #   container_name: ravenhelm-playwright
+  #   labels:
+  #     - "ravenhelm.project=hlidskjalf"
+  #     - "ravenhelm.service=playwright"
+  #     - "ravenhelm.workload=document-ingestion"
+  #   environment:
+  #     - MAX_CONCURRENT_SESSIONS=5
+  #     - CONNECTION_TIMEOUT=60000
+  #     - MAX_QUEUE_LENGTH=10
+  #   ports:
+  #     - "3030:3000"
+  #   restart: unless-stopped
+  #   networks:
+  #     - platform_net
 

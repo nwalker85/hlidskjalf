@@ -21,6 +21,7 @@ services:
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ./config/certs:/certs:ro
       - traefik_spire_certs:/run/spire/certs:ro
+      - traefik_letsencrypt:/letsencrypt
     environment:
       - TRAEFIK_LOG_LEVEL=INFO
       - DOCKER_API_VERSION=1.52
@@ -38,11 +39,11 @@ services:
       - "traefik.http.routers.traefik.service=api@internal"
       - "traefik.http.routers.traefik.middlewares=secure-headers@file"
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck"]
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
@@ -103,10 +104,12 @@ networks:
     external: true
   ravenhelm:
     name: ravenhelm-network
-    external: true
-
+    #external: true
+    driver: bridge
 volumes:
   traefik_spire_certs:
+  traefik_letsencrypt:
+    driver: local
   spire_agent_socket:
     external: true
     name: hlidskjalf_spire_agent_socket

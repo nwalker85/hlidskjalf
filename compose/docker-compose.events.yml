@@ -17,6 +17,10 @@ services:
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:latest
     container_name: gitlab-sre-redpanda
+    labels:
+      - "ravenhelm.project=hlidskjalf-events"
+      - "ravenhelm.service=redpanda"
+      - "ravenhelm.workload=event-bus"
     command:
       - redpanda
       - start
@@ -54,6 +58,10 @@ services:
   redpanda-console:
     image: docker.redpanda.com/redpandadata/console:latest
     container_name: gitlab-sre-redpanda-console
+    labels:
+      - "ravenhelm.project=hlidskjalf-events"
+      - "ravenhelm.service=redpanda-console"
+      - "ravenhelm.workload=event-bus"
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
     environment:

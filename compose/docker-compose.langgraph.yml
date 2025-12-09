@@ -21,7 +21,7 @@ services:
       dockerfile: Dockerfile.langgraph
     container_name: gitlab-sre-langgraph
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-langgraph"
       - "ravenhelm.service=langgraph"
       - "ravenhelm.workload=ai-agent"
     ports:
@@ -70,7 +70,7 @@ services:
       dockerfile: Dockerfile
     container_name: gitlab-sre-hlidskjalf
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-langgraph"
       - "ravenhelm.service=api"
       - "ravenhelm.workload=control-plane"
     environment:
@@ -88,6 +88,7 @@ services:
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
     volumes:
       - ../hlidskjalf/src:/app/src:ro
+      - ../config:/config:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "8900:8900"
@@ -112,7 +113,7 @@ services:
         - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
     container_name: gitlab-sre-hlidskjalf-ui
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-langgraph"
       - "ravenhelm.service=ui"
       - "ravenhelm.workload=control-plane"
     environment:

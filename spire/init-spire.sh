@@ -113,6 +113,10 @@ register_workloads() {
         # Graph DBs
         "graph:spiffe://ravenhelm.local/workload/neo4j"
         "graph:spiffe://ravenhelm.local/workload/memgraph"
+        
+        # External Services (require separate agent setup)
+        # See scripts/register-model-server-spire.sh for external model server
+        # "model-server:spiffe://ravenhelm.local/workload/model-server"
     )
     
     for workload in "${workloads[@]}"; do

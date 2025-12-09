@@ -7,6 +7,7 @@ set -euo pipefail
 
 COMPOSE_DIR="$(cd "$(dirname "$0")/../compose" && pwd)"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TRAEFIK_COMPOSE="ravenhelm-proxy/docker-compose-traefik.yml"
 
 cd "$ROOT_DIR"
 
@@ -18,6 +19,15 @@ echo
 # Ensure networks exist
 echo "→ Creating platform networks..."
 ./scripts/create_traefik_networks.sh
+
+# Start Traefik first as it's the edge proxy
+if [[ -f "$TRAEFIK_COMPOSE" ]]; then
+  echo
+  echo "→ Starting Traefik (edge proxy)..."
+  docker compose -f "$TRAEFIK_COMPOSE" up -d
+  echo "✓ Traefik started"
+  sleep 3
+fi
 
 echo
 echo "→ Starting Infrastructure Stack (postgres, redis, nats, localstack, openbao)..."
@@ -61,11 +71,17 @@ echo "✅ Platform Started Successfully!"
 echo "========================================="
 echo
 echo "Key Services:"
+echo "  • Traefik Dashboard: https://proxy.ravenhelm.test"
 echo "  • Hlidskjalf UI:     https://hlidskjalf.ravenhelm.test"
 echo "  • Norns (LangGraph): https://norns.ravenhelm.test"
 echo "  • GitLab:            https://gitlab.ravenhelm.test"
 echo "  • Grafana:           https://grafana.observe.ravenhelm.test"
 echo "  • Zitadel:           https://zitadel.ravenhelm.test"
 echo
+echo "External (.dev domains require DNS/port forwarding):"
+echo "  • Hlidskjalf UI:     https://hlidskjalf.ravenhelm.dev"
+echo "  • Grafana:           https://grafana.ravenhelm.dev"
+echo
 echo "Run 'docker compose ps' to see all services"
+echo "Run 'docker compose -f ravenhelm-proxy/docker-compose-traefik.yml logs -f' to see Traefik logs"
 

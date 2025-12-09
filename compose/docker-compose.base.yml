@@ -135,4 +135,7 @@ volumes:
   n8n_data:
     external: true
     name: hlidskjalf_n8n_data
+  firecrawl_data:
+    external: true
+    name: hlidskjalf_firecrawl_data
 

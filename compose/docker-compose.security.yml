@@ -76,7 +76,7 @@ services:
     container_name: gitlab-sre-postgres-spiffe-helper
     user: "1001:1001"  # ravenhelm platform user for consistent ownership
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-security"
       - "ravenhelm.service=spiffe-helper"
       - "ravenhelm.workload=postgres"
     entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
@@ -97,7 +97,7 @@ services:
     image: spiffe-helper:local
     container_name: gitlab-sre-nats-spiffe-helper
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-security"
       - "ravenhelm.service=spiffe-helper"
       - "ravenhelm.workload=nats"
     entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
@@ -119,7 +119,7 @@ services:
     container_name: gitlab-sre-redis-spiffe-helper
     user: "1001:1001"  # ravenhelm platform user for consistent ownership
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-security"
       - "ravenhelm.service=spiffe-helper"
       - "ravenhelm.workload=redis"
     entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
@@ -141,7 +141,7 @@ services:
     container_name: gitlab-sre-mcp-gitlab-spiffe-helper
     user: "1001:1001"
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-security"
       - "ravenhelm.service=spiffe-helper"
       - "ravenhelm.workload=mcp-gitlab"
     entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
@@ -165,7 +165,7 @@ services:
     container_name: gitlab-sre-zitadel
     user: "1001:1001"  # ravenhelm platform user
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-security"
       - "ravenhelm.service=zitadel"
       - "ravenhelm.workload=zitadel"
     command: start-from-init --masterkeyFromEnv --tlsMode external
@@ -183,7 +183,7 @@ services:
       ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: postgres
       ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
       # External domain - standard HTTPS via Traefik ingress
-      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.test
+      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.dev
       ZITADEL_EXTERNALPORT: 443
       ZITADEL_EXTERNALSECURE: "true"
       # First instance setup
@@ -212,7 +212,7 @@ services:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
     container_name: gitlab-sre-oauth2-proxy
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-security"
       - "ravenhelm.service=oauth2-proxy"
       - "ravenhelm.workload=auth"
     environment:
@@ -248,6 +248,61 @@ services:
       - "zitadel.ravenhelm.test:host-gateway"
     ports:
       - "4180:4180"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # ZERO-TRUST - OAuth2-Proxy for .dev domain (Staging Environment)
+  # =========================================================================
+  oauth2-proxy-staging:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: gitlab-sre-oauth2-proxy-staging
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=oauth2-proxy-staging"
+      - "ravenhelm.workload=auth"
+      - "ravenhelm.environment=staging"
+    environment:
+      # Zitadel OIDC Configuration (staging environment)
+      # NOTE: Using .test issuer until staging .dev DNS is fully configured, then switch to https://zitadel.ravenhelm.dev
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.test
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_STAGING_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_STAGING_CLIENT_SECRET}
+      # Cookie settings for staging (.dev) domain
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.ravenhelm.dev
+      - OAUTH2_PROXY_COOKIE_NAME=_ravenhelm_auth_dev
+      # Proxy settings
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4181
+      - OAUTH2_PROXY_REDIRECT_URL=https://auth.ravenhelm.dev/oauth2/callback
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=.ravenhelm.dev
+      # Auth settings
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_SCOPE=openid profile email
+      - OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+      - OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      # Reverse proxy mode for Traefik
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REAL_CLIENT_IP_HEADER=X-Forwarded-For
+      # Skip TLS verification for self-signed certs (needed for staging .dev → dev .test Zitadel fallback)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+      # Skip auth for specific paths
+      - OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/health$|^/ready$|^/metrics$|^/api/health$
+    extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "4181:4181"
     healthcheck:
       test: ["CMD", "/bin/oauth2-proxy", "--version"]
       interval: 1m

@@ -45,65 +45,58 @@ class OllamaEmbeddings:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._dimension: int | None = None
-        self._client: httpx.AsyncClient | None = None
-    
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=120.0)
-        return self._client
+        # Don't cache client - create fresh for each request to handle event loop changes
     
     async def ensure_model(self) -> bool:
         """Ensure the embedding model is available, pull if needed"""
-        client = await self._get_client()
-        
-        # Check if model exists
-        try:
-            response = await client.get(f"{self.base_url}/api/tags")
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                model_names = [m.get("name", "").split(":")[0] for m in models]
-                
-                if self.model.split(":")[0] in model_names:
-                    logger.info(f"Ollama model {self.model} is available")
-                    return True
-        except Exception as e:
-            logger.warning(f"Failed to check Ollama models: {e}")
-        
-        # Pull the model
-        logger.info(f"Pulling Ollama model: {self.model}")
-        try:
-            response = await client.post(
-                f"{self.base_url}/api/pull",
-                json={"name": self.model, "stream": False},
-                timeout=600.0,  # 10 minutes for large models
-            )
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Failed to pull model {self.model}: {e}")
-            return False
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Check if model exists
+            try:
+                response = await client.get(f"{self.base_url}/api/tags")
+                if response.status_code == 200:
+                    models = response.json().get("models", [])
+                    model_names = [m.get("name", "").split(":")[0] for m in models]
+                    
+                    if self.model.split(":")[0] in model_names:
+                        logger.info(f"Ollama model {self.model} is available")
+                        return True
+            except Exception as e:
+                logger.warning(f"Failed to check Ollama models: {e}")
+            
+            # Pull the model
+            logger.info(f"Pulling Ollama model: {self.model}")
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/pull",
+                    json={"name": self.model, "stream": False},
+                    timeout=600.0,  # 10 minutes for large models
+                )
+                return response.status_code == 200
+            except Exception as e:
+                logger.error(f"Failed to pull model {self.model}: {e}")
+                return False
     
     async def embed_query(self, text: str) -> list[float]:
         """Embed a single query text"""
-        client = await self._get_client()
-        
-        try:
-            response = await client.post(
-                f"{self.base_url}/api/embeddings",
-                json={"model": self.model, "prompt": text},
-            )
-            
-            if response.status_code == 200:
-                embedding = response.json().get("embedding", [])
-                if not self._dimension:
-                    self._dimension = len(embedding)
-                return embedding
-            else:
-                logger.error(f"Ollama embedding failed: {response.status_code}")
-                return []
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/embeddings",
+                    json={"model": self.model, "prompt": text},
+                )
                 
-        except Exception as e:
-            logger.error(f"Ollama embedding error: {e}")
-            return []
+                if response.status_code == 200:
+                    embedding = response.json().get("embedding", [])
+                    if not self._dimension:
+                        self._dimension = len(embedding)
+                    return embedding
+                else:
+                    logger.error(f"Ollama embedding failed: {response.status_code}")
+                    return []
+                    
+            except Exception as e:
+                logger.error(f"Ollama embedding error: {e}")
+                return []
     
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed multiple documents"""
@@ -128,9 +121,8 @@ class OllamaEmbeddings:
         return self._dimension or 768  # Default for nomic-embed-text
     
     async def close(self) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        """No-op - clients are not cached"""
+        pass
 
 
 class OllamaChat:
@@ -150,43 +142,36 @@ class OllamaChat:
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self._client: httpx.AsyncClient | None = None
-    
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=120.0)
-        return self._client
     
     async def ensure_model(self) -> bool:
         """Ensure the chat model is available"""
-        client = await self._get_client()
-        
-        try:
-            response = await client.get(f"{self.base_url}/api/tags")
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                model_names = [m.get("name", "") for m in models]
-                
-                # Check for exact match or base model
-                model_base = self.model.split(":")[0]
-                for name in model_names:
-                    if name == self.model or name.startswith(model_base):
-                        return True
-        except Exception:
-            pass
-        
-        # Pull the model
-        logger.info(f"Pulling Ollama model: {self.model}")
-        try:
-            response = await client.post(
-                f"{self.base_url}/api/pull",
-                json={"name": self.model, "stream": False},
-                timeout=600.0,
-            )
-            return response.status_code == 200
-        except Exception as e:
-            logger.error(f"Failed to pull model {self.model}: {e}")
-            return False
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.get(f"{self.base_url}/api/tags")
+                if response.status_code == 200:
+                    models = response.json().get("models", [])
+                    model_names = [m.get("name", "") for m in models]
+                    
+                    # Check for exact match or base model
+                    model_base = self.model.split(":")[0]
+                    for name in model_names:
+                        if name == self.model or name.startswith(model_base):
+                            return True
+            except Exception:
+                pass
+            
+            # Pull the model
+            logger.info(f"Pulling Ollama model: {self.model}")
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/pull",
+                    json={"name": self.model, "stream": False},
+                    timeout=600.0,
+                )
+                return response.status_code == 200
+            except Exception as e:
+                logger.error(f"Failed to pull model {self.model}: {e}")
+                return False
     
     async def chat(
         self,
@@ -205,34 +190,33 @@ class OllamaChat:
         Returns:
             Assistant response text
         """
-        client = await self._get_client()
-        
         # Build messages with optional system prompt
         formatted_messages = []
         if system:
             formatted_messages.append({"role": "system", "content": system})
         formatted_messages.extend(messages)
         
-        try:
-            response = await client.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": formatted_messages,
-                    "stream": False,
-                    "options": {"temperature": temperature},
-                },
-            )
-            
-            if response.status_code == 200:
-                return response.json().get("message", {}).get("content", "")
-            else:
-                logger.error(f"Ollama chat failed: {response.status_code}")
-                return ""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": formatted_messages,
+                        "stream": False,
+                        "options": {"temperature": temperature},
+                    },
+                )
                 
-        except Exception as e:
-            logger.error(f"Ollama chat error: {e}")
-            return ""
+                if response.status_code == 200:
+                    return response.json().get("message", {}).get("content", "")
+                else:
+                    logger.error(f"Ollama chat failed: {response.status_code}")
+                    return ""
+                    
+            except Exception as e:
+                logger.error(f"Ollama chat error: {e}")
+                return ""
     
     async def generate(
         self,
@@ -241,32 +225,30 @@ class OllamaChat:
         temperature: float = 0.7,
     ) -> str:
         """Simple generation without chat format"""
-        client = await self._get_client()
-        
-        try:
-            response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "system": system or "",
-                    "stream": False,
-                    "options": {"temperature": temperature},
-                },
-            )
-            
-            if response.status_code == 200:
-                return response.json().get("response", "")
-            return ""
-            
-        except Exception as e:
-            logger.error(f"Ollama generate error: {e}")
-            return ""
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "system": system or "",
+                        "stream": False,
+                        "options": {"temperature": temperature},
+                    },
+                )
+                
+                if response.status_code == 200:
+                    return response.json().get("response", "")
+                return ""
+                
+            except Exception as e:
+                logger.error(f"Ollama generate error: {e}")
+                return ""
     
     async def close(self) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        """No-op - clients are not cached"""
+        pass
 
 
 class OllamaProvider:

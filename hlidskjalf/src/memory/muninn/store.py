@@ -236,6 +236,7 @@ class MuninnStore:
         embedder = await self._get_embedder()
         if not embedder:
             # Fall back to local index search
+            logger.debug("recall: no embedder, falling back to keyword search")
             return self._local_search(query, k, memory_type, domain, min_weight)
         
         try:
@@ -244,7 +245,7 @@ class MuninnStore:
             logger.error(f"Failed to embed query: {e}")
             return self._local_search(query, k, memory_type, domain, min_weight)
         
-        # Search database with pgvector
+        # Search database with pgvector if available
         pool = await self._get_pool()
         if pool:
             try:
@@ -280,7 +281,8 @@ class MuninnStore:
             except Exception as e:
                 logger.error(f"Failed to search memories: {e}")
         
-        return self._local_search(query, k, memory_type, domain, min_weight)
+        # Fall back to embedding-based search on local index
+        return self._local_embedding_search(query_embedding, k, memory_type, domain, min_weight)
     
     def _local_search(
         self,
@@ -310,6 +312,60 @@ class MuninnStore:
         # Sort by weight
         matches.sort(key=lambda m: m.weight, reverse=True)
         return matches[:k]
+    
+    def _local_embedding_search(
+        self,
+        query_embedding: list[float],
+        k: int,
+        memory_type: MemoryType | None,
+        domain: str | None,
+        min_weight: float,
+    ) -> list[MemoryFragment]:
+        """Semantic search on local index using cosine similarity"""
+        import numpy as np
+        
+        matches = []
+        query_vec = np.array(query_embedding)
+        query_norm = np.linalg.norm(query_vec)
+        
+        if query_norm == 0:
+            logger.warning("Query embedding is zero vector, falling back to keyword search")
+            return []
+        
+        query_vec_normalized = query_vec / query_norm
+        
+        for fragment in self._memory_index.values():
+            # Apply filters
+            if fragment.weight < min_weight:
+                continue
+            if memory_type and fragment.type != memory_type:
+                continue
+            if domain and fragment.domain != domain:
+                continue
+            
+            # Skip if no embedding
+            if not fragment.embedding:
+                continue
+            
+            # Compute cosine similarity
+            frag_vec = np.array(fragment.embedding)
+            frag_norm = np.linalg.norm(frag_vec)
+            if frag_norm == 0:
+                continue
+            
+            frag_vec_normalized = frag_vec / frag_norm
+            similarity = float(np.dot(query_vec_normalized, frag_vec_normalized))
+            
+            # Combine similarity with weight (30% weight, 70% similarity)
+            score = fragment.weight * 0.3 + similarity * 0.7
+            matches.append((score, fragment))
+        
+        # Sort by combined score
+        matches.sort(key=lambda x: x[0], reverse=True)
+        
+        logger.info(f"Local embedding search: found {len(matches)} candidates")
+        
+        return [m[1] for m in matches[:k]]
     
     def _row_to_fragment(self, row) -> MemoryFragment:
         """Convert database row to MemoryFragment"""

@@ -36,7 +36,12 @@ The platform is now split into 8 independent compose stacks for improved stabili
 
 # Add observability to running stack
 ./scripts/start-observability.sh
+
+# Cleanup and rebuild (after code changes - safe, keeps data)
+./scripts/cleanup-rebuild-platform.sh --medium --rebuild --restart
 ```
+
+See [`docs/CLEANUP_REBUILD_GUIDE.md`](../CLEANUP_REBUILD_GUIDE.md) for detailed cleanup options and scenarios. **Note:** Volumes (databases, etc.) are never automatically removed - your data is always safe.
 
 See [`docs/runbooks/RUNBOOK-030-compose-management.md`](../runbooks/RUNBOOK-030-compose-management.md) for detailed stack management procedures.
 

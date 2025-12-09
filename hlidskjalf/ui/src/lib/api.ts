@@ -2,7 +2,11 @@
  * API client for Hliðskjálf
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://hlidskjalf-api.ravenhelm.test";
+// Use the same origin as the frontend to avoid CORS issues
+// In production/staging, Traefik routes to the correct backend
+const API_BASE = typeof window !== 'undefined' 
+  ? window.location.origin.replace('hlidskjalf.', 'hlidskjalf-api.')
+  : process.env.NEXT_PUBLIC_API_URL || "https://hlidskjalf-api.ravenhelm.test";
 
 export interface PlatformOverview {
   total_projects: number;
@@ -80,6 +84,8 @@ class HlidskjalfAPI {
   private async request<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...options,
+      // Include credentials for cross-origin requests (oauth2-proxy cookies)
+      credentials: 'include',
       headers: {
         "Content-Type": "application/json",
         ...options?.headers,
@@ -99,8 +105,9 @@ class HlidskjalfAPI {
   }
 
   // Projects
-  async listProjects(): Promise<Project[]> {
-    return this.request("/api/v1/projects");
+  async listProjects(realm?: string): Promise<Project[]> {
+    const params = realm ? `?realm=${realm}` : "";
+    return this.request(`/api/v1/projects${params}`);
   }
 
   async getProject(projectId: string): Promise<Project> {
@@ -183,6 +190,40 @@ class HlidskjalfAPI {
   // Health
   async checkHealth(): Promise<{ status: string }> {
     return this.request("/health");
+  }
+
+  async getHealthSummary(): Promise<{
+    health_counts: Record<string, number>;
+    realm_health: Record<string, Record<string, number>>;
+    uptime_percentage: number;
+    recent_failures: Array<{
+      deployment_id: string;
+      project_id: string;
+      environment: string;
+      last_check: string | null;
+    }>;
+  }> {
+    return this.request("/api/v1/health/summary");
+  }
+
+  async getProjectHealth(projectId: string): Promise<{
+    project_id: string;
+    project_name: string;
+    deployments: Array<{
+      deployment_id: string;
+      environment: string;
+      status: string;
+      health_status: string;
+      last_health_check: string | null;
+      recent_checks: Array<{
+        status: string;
+        response_time_ms: number | null;
+        checked_at: string;
+      }>;
+    }>;
+    overall_health: string;
+  }> {
+    return this.request(`/api/v1/projects/${projectId}/health`);
   }
 }
 

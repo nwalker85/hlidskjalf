@@ -28,6 +28,7 @@ class SkillMetadata:
     description: str
     version: str = "1.0.0"
     author: str = "Norns"
+    roles: list[str] = field(default_factory=list)  # Target roles (sre, devops, etc.)
     tags: list[str] = field(default_factory=list)
     triggers: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
@@ -126,6 +127,7 @@ async def load_skill_metadata(skill_path: Path) -> Optional[SkillMetadata]:
             description=frontmatter.get("description", "No description"),
             version=frontmatter.get("version", "1.0.0"),
             author=frontmatter.get("author", "Unknown"),
+            roles=frontmatter.get("roles", []),
             tags=frontmatter.get("tags", []),
             triggers=frontmatter.get("triggers", []),
             dependencies=frontmatter.get("dependencies", []),
@@ -433,6 +435,118 @@ async def update_skill(
 
 
 # =============================================================================
+# Muninn Integration - Skills as Procedural Memory
+# =============================================================================
+
+async def migrate_skills_to_muninn(muninn=None) -> dict[str, str]:
+    """
+    Migrate all filesystem skills to Muninn procedural memory.
+    
+    Args:
+        muninn: Optional MuninnStore instance. If not provided, creates a new one.
+    
+    Returns dict mapping skill names to memory IDs.
+    """
+    from src.memory.muninn.store import MuninnStore
+    from src.memory.muninn.procedural import ProceduralMemory
+    
+    # Use provided store or create new one
+    if muninn is None:
+        from src.core.config import get_settings
+        settings = get_settings()
+        db_url = str(settings.DATABASE_URL) if settings.DATABASE_URL else None
+        muninn = MuninnStore(database_url=db_url)
+    
+    proc_mem = ProceduralMemory(muninn)
+    
+    # Discover all skills
+    skills_meta = await discover_all_skills()
+    migration_map = {}
+    
+    for skill_meta in skills_meta:
+        # Load full skill content
+        skill = await load_full_skill(skill_meta.path)
+        if not skill:
+            continue
+        
+        # Use roles from metadata, fall back to ["norns"] if empty
+        roles = skill.metadata.roles if skill.metadata.roles else ["norns"]
+        
+        # Migrate to Muninn
+        try:
+            memory_id = await proc_mem.add_skill(
+                name=skill.metadata.name,
+                content=skill.content,
+                roles=roles,
+                summary=skill.metadata.description,
+                domain="ravenhelm",
+                tags=skill.metadata.tags,
+                dependencies=skill.metadata.dependencies,
+                version=skill.metadata.version,
+            )
+            migration_map[skill.metadata.name] = memory_id
+            print(f"✓ Migrated skill '{skill.metadata.name}' → {memory_id}")
+        except Exception as e:
+            print(f"✗ Failed to migrate '{skill.metadata.name}': {e}")
+    
+    return migration_map
+
+
+@tool
+async def retrieve_skills_from_memory(
+    query: str,
+    role: str | None = None,
+    k: int = 5
+) -> str:
+    """
+    Retrieve relevant skills from Muninn procedural memory using RAG.
+    
+    This is the new preferred method for skill retrieval.
+    
+    Args:
+        query: Task description or natural language query
+        role: Filter by role (sre, devops, technical_writer, etc.)
+        k: Number of skills to retrieve
+    
+    Returns:
+        Formatted skills ready for prompt injection
+    """
+    from src.memory.muninn.store import MuninnStore
+    from src.memory.muninn.procedural import ProceduralMemory
+    from src.core.config import get_settings
+    
+    settings = get_settings()
+    muninn = MuninnStore(database_url=str(settings.DATABASE_URL))
+    proc_mem = ProceduralMemory(muninn)
+    
+    # Retrieve skills via RAG
+    skills = await proc_mem.retrieve_skills(
+        query=query,
+        role=role,
+        k=k
+    )
+    
+    if not skills:
+        return f"No skills found matching query '{query}'"
+    
+    # Format for output
+    output = [f"# Retrieved {len(skills)} Relevant Skills\n"]
+    
+    for skill in skills:
+        name = skill.features.get("name", "Unknown")
+        roles_str = ", ".join(skill.features.get("roles", []))
+        weight = skill.weight
+        refs = skill.references
+        
+        output.append(f"## {name}")
+        output.append(f"**Roles**: {roles_str} | **Weight**: {weight:.2f} | **Uses**: {refs}")
+        output.append(f"\n{skill.content}\n")
+        output.append("---\n")
+    
+    return "\n".join(output)
+
+
+# =============================================================================
 # Skill Tools Collection
 # =============================================================================
 
@@ -440,6 +554,7 @@ SKILL_TOOLS = [
     list_skills,
     read_skill,
     search_skills,
+    retrieve_skills_from_memory,  # NEW: RAG-based retrieval
     create_skill,
     update_skill,
 ]

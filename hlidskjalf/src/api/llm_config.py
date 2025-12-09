@@ -1,353 +1,436 @@
 """
-LLM Configuration API - Runtime model switching
+LLM Configuration API - Provider and model configuration management
 
-Allows dynamic switching of LLM providers and models without restart.
-Configuration is stored in Huginn session state and read by the agent on each turn.
+Provides endpoints for:
+- Managing LLM providers (OpenAI, Anthropic, custom servers)
+- Configuring models for different interaction types
+- Validating provider connectivity
 """
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import Optional
-import asyncio
-import json
-import logging
-import httpx
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+from typing import List
+from uuid import UUID
 
-from src.memory.huginn.state_agent import (
-    HuginnStateAgent,
-    LLMConfiguration,
-    LLMModelConfig,
-)
-from src.norns.squad_schema import Topics
 from src.core.config import get_settings
+from src.services.llm_providers import LLMProviderService
+from src.services.llm_config import LLMConfigService
+from src.models.llm_config import (
+    ProviderCreate,
+    ProviderUpdate,
+    ProviderResponse,
+    ModelCreate,
+    ModelResponse,
+    InteractionConfigUpdate,
+    InteractionConfigResponse,
+    GlobalConfigResponse,
+    InteractionType,
+)
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 settings = get_settings()
 
-# Singleton Huginn instance for config storage
-_huginn: Optional[HuginnStateAgent] = None
+# Create async engine
+engine = create_async_engine(str(settings.DATABASE_URL), echo=False)
+async_session_maker = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def get_huginn() -> HuginnStateAgent:
-    """Get or create Huginn state agent"""
-    global _huginn
-    if _huginn is None:
-        _huginn = HuginnStateAgent(
-            redis_url=settings.REDIS_URL,
-            state_ttl_seconds=86400,  # 24 hours for config
-            kafka_bootstrap=settings.KAFKA_BOOTSTRAP,
-        )
-    return _huginn
+async def get_db():
+    """Dependency to get database session"""
+    async with async_session_maker() as session:
+        yield session
 
 
 # =============================================================================
-# Request/Response Models
-# =============================================================================
-
-class LLMModelConfigRequest(BaseModel):
-    """Request model for a single LLM configuration"""
-    provider: str = Field(default="ollama", description="Provider: ollama, lmstudio, openai")
-    model: str = Field(default="mistral-nemo:latest", description="Model identifier")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Temperature for generation")
-
-
-class LLMConfigurationRequest(BaseModel):
-    """Request model for full LLM configuration"""
-    reasoning: LLMModelConfigRequest = Field(
-        default_factory=LLMModelConfigRequest,
-        description="Model for main agent reasoning"
-    )
-    tools: LLMModelConfigRequest = Field(
-        default_factory=lambda: LLMModelConfigRequest(temperature=0.1),
-        description="Model for tool execution"
-    )
-    subagents: LLMModelConfigRequest = Field(
-        default_factory=lambda: LLMModelConfigRequest(temperature=0.5),
-        description="Model for subagent tasks"
-    )
-
-
-class LLMConfigurationResponse(BaseModel):
-    """Response model with current LLM configuration"""
-    session_id: str
-    reasoning: LLMModelConfigRequest
-    tools: LLMModelConfigRequest
-    subagents: LLMModelConfigRequest
-    
-    
-class AvailableProvider(BaseModel):
-    """Information about an available LLM provider"""
-    id: str
-    name: str
-    available: bool
-    models: list[str]
-    default_model: str
-
-
-class AvailableProvidersResponse(BaseModel):
-    """Response listing all available providers"""
-    providers: list[AvailableProvider]
-
-
-async def fetch_ollama_models() -> list[str]:
-    """
-    Retrieve available models from the configured Ollama endpoint.
-    Falls back to a static list when the daemon is unreachable.
-    """
-    default_models = [
-        "mistral-nemo:latest",
-        "llama3.1:8b",
-        "codellama:latest",
-        "deepseek-coder:latest",
-    ]
-    base_url = settings.OLLAMA_URL.rstrip("/") if settings.OLLAMA_URL else ""
-    if not base_url:
-        return default_models
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{base_url}/api/tags")
-            resp.raise_for_status()
-            payload = resp.json()
-    except Exception as exc:
-        logger.warning("Failed to fetch Ollama tags: %s", exc)
-        return default_models
-
-    models: list[str] = []
-    for model in payload.get("models", []):
-        name = model.get("name") or model.get("model")
-        if name and name not in models:
-            models.append(name)
-
-    return models or default_models
-
-
-async def get_available_providers() -> list[AvailableProvider]:
-    """Build the provider inventory used by API responses and UI events."""
-    ollama_models = await fetch_ollama_models()
-    return [
-        AvailableProvider(
-            id="ollama",
-            name="Ollama",
-            available=bool(ollama_models),
-            models=ollama_models,
-            default_model=ollama_models[0] if ollama_models else "mistral-nemo:latest",
-        ),
-        AvailableProvider(
-            id="lmstudio",
-            name="LM Studio",
-            available=True,
-            models=["local-model"],
-            default_model="local-model",
-        ),
-        AvailableProvider(
-            id="openai",
-            name="OpenAI",
-            available=bool(settings.OPENAI_API_KEY),
-            models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-            default_model="gpt-4o",
-        ),
-    ]
-
-
-# =============================================================================
-# Endpoints
+# Provider Management Endpoints
 # =============================================================================
 
 @router.get(
     "/llm/providers",
-    response_model=AvailableProvidersResponse,
-    tags=["LLM Config"],
-    summary="List available LLM providers"
+    response_model=List[ProviderResponse],
+    tags=["LLM Configuration"],
+    summary="List all LLM providers"
 )
-async def list_providers():
+async def list_providers(
+    enabled_only: bool = False,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    List all available LLM providers and their models.
+    Get list of all configured LLM providers.
     
-    This returns static configuration - actual availability 
-    should be checked via health endpoints.
+    Args:
+        enabled_only: If true, only return enabled providers
     """
-    providers = await get_available_providers()
-    return AvailableProvidersResponse(providers=providers)
-
-
-@router.get(
-    "/llm/config/{session_id}",
-    response_model=LLMConfigurationResponse,
-    tags=["LLM Config"],
-    summary="Get LLM configuration for session"
-)
-async def get_llm_config(session_id: str):
-    """
-    Get the current LLM configuration for a session.
+    service = LLMProviderService(db)
+    providers = await service.list_providers(enabled_only=enabled_only)
     
-    If no configuration exists, returns the default configuration.
-    """
-    huginn = await get_huginn()
-    config = await huginn.get_llm_config(session_id)
-    
-    return LLMConfigurationResponse(
-        session_id=session_id,
-        reasoning=LLMModelConfigRequest(
-            provider=config.reasoning.provider,
-            model=config.reasoning.model,
-            temperature=config.reasoning.temperature,
-        ),
-        tools=LLMModelConfigRequest(
-            provider=config.tools.provider,
-            model=config.tools.model,
-            temperature=config.tools.temperature,
-        ),
-        subagents=LLMModelConfigRequest(
-            provider=config.subagents.provider,
-            model=config.subagents.model,
-            temperature=config.subagents.temperature,
-        ),
-    )
+    return [
+        ProviderResponse(
+            id=str(p.id),
+            name=p.name,
+            provider_type=p.provider_type.value,
+            api_base_url=p.api_base_url,
+            enabled=p.enabled,
+            validated_at=p.validated_at,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+            models=[m.model_name for m in p.models]
+        )
+        for p in providers
+    ]
 
 
 @router.post(
-    "/llm/config/{session_id}",
-    response_model=LLMConfigurationResponse,
-    tags=["LLM Config"],
-    summary="Update LLM configuration for session"
+    "/llm/providers",
+    response_model=ProviderResponse,
+    tags=["LLM Configuration"],
+    summary="Add a new LLM provider"
 )
-async def update_llm_config(session_id: str, request: LLMConfigurationRequest):
+async def add_provider(
+    provider_data: ProviderCreate,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Update the LLM configuration for a session.
+    Add a new LLM provider.
     
-    This takes effect immediately - the next agent invocation
-    will use the new configuration.
+    For OpenAI/Anthropic, only name and API key are required.
+    For custom servers, name, api_base_url, and optional API key are required.
     
-    **Example:**
-    ```json
-    {
-        "reasoning": {
-            "provider": "ollama",
-            "model": "mistral-nemo:latest",
-            "temperature": 0.7
-        },
-        "tools": {
-            "provider": "ollama", 
-            "model": "mistral-nemo:latest",
-            "temperature": 0.1
-        },
-        "subagents": {
-            "provider": "ollama",
-            "model": "mistral-nemo:latest", 
-            "temperature": 0.5
-        }
-    }
-    ```
+    The custom server will be validated before being added.
     """
-    huginn = await get_huginn()
+    service = LLMProviderService(db)
     
-    # Convert request to internal config model
-    config = LLMConfiguration(
-        reasoning=LLMModelConfig(
-            provider=request.reasoning.provider,
-            model=request.reasoning.model,
-            temperature=request.reasoning.temperature,
-        ),
-        tools=LLMModelConfig(
-            provider=request.tools.provider,
-            model=request.tools.model,
-            temperature=request.tools.temperature,
-        ),
-        subagents=LLMModelConfig(
-            provider=request.subagents.provider,
-            model=request.subagents.model,
-            temperature=request.subagents.temperature,
-        ),
-    )
+    try:
+        provider = await service.add_provider(provider_data)
+        return ProviderResponse(
+            id=str(provider.id),
+            name=provider.name,
+            provider_type=provider.provider_type.value,
+            api_base_url=provider.api_base_url,
+            enabled=provider.enabled,
+            validated_at=provider.validated_at,
+            created_at=provider.created_at,
+            updated_at=provider.updated_at
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add provider: {str(e)}")
+
+
+@router.put(
+    "/llm/providers/{provider_id}",
+    response_model=ProviderResponse,
+    tags=["LLM Configuration"],
+    summary="Update a provider"
+)
+async def update_provider(
+    provider_id: UUID,
+    update_data: ProviderUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update an existing provider's configuration"""
+    service = LLMProviderService(db)
     
-    # Update and persist
-    updated_config = await huginn.update_llm_config(session_id, config)
-    
-    logger.info(f"Updated LLM config for session {session_id}: {updated_config}")
-    
-    return LLMConfigurationResponse(
-        session_id=session_id,
-        reasoning=LLMModelConfigRequest(
-            provider=updated_config.reasoning.provider,
-            model=updated_config.reasoning.model,
-            temperature=updated_config.reasoning.temperature,
-        ),
-        tools=LLMModelConfigRequest(
-            provider=updated_config.tools.provider,
-            model=updated_config.tools.model,
-            temperature=updated_config.tools.temperature,
-        ),
-        subagents=LLMModelConfigRequest(
-            provider=updated_config.subagents.provider,
-            model=updated_config.subagents.model,
-            temperature=updated_config.subagents.temperature,
-        ),
-    )
+    try:
+        provider = await service.update_provider(provider_id, update_data)
+        return ProviderResponse(
+            id=str(provider.id),
+            name=provider.name,
+            provider_type=provider.provider_type.value,
+            api_base_url=provider.api_base_url,
+            enabled=provider.enabled,
+            validated_at=provider.validated_at,
+            created_at=provider.created_at,
+            updated_at=provider.updated_at
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update provider: {str(e)}")
 
 
 @router.delete(
-    "/llm/config/{session_id}",
-    tags=["LLM Config"],
-    summary="Reset LLM configuration to defaults"
+    "/llm/providers/{provider_id}",
+    tags=["LLM Configuration"],
+    summary="Remove a provider"
 )
-async def reset_llm_config(session_id: str):
-    """
-    Reset the LLM configuration for a session to defaults.
-    """
-    huginn = await get_huginn()
+async def remove_provider(
+    provider_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Disable a provider (soft delete)"""
+    service = LLMProviderService(db)
     
-    # Set default config
-    default_config = LLMConfiguration()
-    await huginn.update_llm_config(session_id, default_config)
+    success = await service.remove_provider(provider_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Provider not found")
     
-    return {"status": "reset", "session_id": session_id}
+    return {"success": True, "message": "Provider disabled"}
+
+
+@router.post(
+    "/llm/providers/{provider_id}/validate",
+    tags=["LLM Configuration"],
+    summary="Validate a provider"
+)
+async def validate_provider(
+    provider_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Validate a provider's configuration by testing connectivity.
+    
+    For custom servers, tests the /v1/models endpoint.
+    For OpenAI/Anthropic, checks if API key is present.
+    """
+    service = LLMProviderService(db)
+    
+    try:
+        is_valid = await service.validate_provider(provider_id)
+        return {
+            "provider_id": str(provider_id),
+            "valid": is_valid,
+            "message": "Provider is valid" if is_valid else "Provider validation failed"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Validation error: {str(e)}")
 
 
 @router.get(
-    "/llm/config/events",
-    tags=["LLM Config"],
-    summary="Stream LLM configuration change events",
+    "/llm/providers/{provider_id}/models",
+    response_model=List[ModelResponse],
+    tags=["LLM Configuration"],
+    summary="Get models for a provider"
 )
-async def stream_llm_config_events():
+async def get_provider_models(
+    provider_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Server-Sent Events stream of llm.config.changed notifications.
+    Get available models for a provider.
+    
+    Fetches from provider API if not already cached in database.
     """
-
-    async def event_stream():
-        try:
-            from aiokafka import AIOKafkaConsumer
-
-            consumer = AIOKafkaConsumer(
-                Topics.LLM_CONFIG,
-                bootstrap_servers=settings.KAFKA_BOOTSTRAP,
-                auto_offset_reset="latest",
-                group_id="llm-config-ui",
-                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+    service = LLMProviderService(db)
+    
+    try:
+        models = await service.get_available_models(provider_id)
+        return [
+            ModelResponse(
+                id=str(m.id),
+                provider_id=str(m.provider_id),
+                model_name=m.model_name,
+                supports_tools=m.supports_tools,
+                supports_embeddings=m.supports_embeddings,
+                context_window=m.context_window,
+                cost_per_1k_input_tokens=float(m.cost_per_1k_input_tokens) if m.cost_per_1k_input_tokens else None,
+                cost_per_1k_output_tokens=float(m.cost_per_1k_output_tokens) if m.cost_per_1k_output_tokens else None
             )
+            for m in models
+        ]
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch models: {str(e)}")
 
-            await consumer.start()
-            yield f"data: {json.dumps({'type': 'connected'})}\n\n"
 
-            try:
-                async for msg in consumer:
-                    event = msg.value
-                    if event:
-                        yield f"data: {json.dumps(event)}\n\n"
-            finally:
-                await consumer.stop()
+@router.post(
+    "/llm/providers/{provider_id}/sync-models",
+    tags=["LLM Configuration"],
+    summary="Sync models from provider API"
+)
+async def sync_provider_models(
+    provider_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetch and sync all available models from the provider's API.
+    
+    This will update the database with the latest models available,
+    including newly released models (e.g., GPT-4.5, new Claude versions).
+    """
+    service = LLMProviderService(db)
+    
+    try:
+        provider = await service.get_provider(provider_id)
+        if not provider:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        
+        # Fetch fresh models from API (will add new ones, existing ones remain)
+        await service._fetch_and_store_models(provider)
+        await db.commit()
+        await db.refresh(provider)
+        
+        return {
+            "success": True,
+            "model_count": len(provider.models),
+            "models": [m.model_name for m in provider.models]
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to sync models: {str(e)}")
 
-        except Exception as exc:
-            logger.error("LLM config stream failed: %s", exc)
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
+@router.post(
+    "/llm/providers/{provider_id}/models",
+    response_model=ModelResponse,
+    tags=["LLM Configuration"],
+    summary="Manually add a model to a provider"
+)
+async def add_model(
+    provider_id: UUID,
+    model_data: ModelCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually add a model to a provider (useful for custom servers)"""
+    service = LLMProviderService(db)
+    
+    try:
+        model = await service.add_model(provider_id, model_data)
+        return ModelResponse(
+            id=str(model.id),
+            provider_id=str(model.provider_id),
+            model_name=model.model_name,
+            supports_tools=model.supports_tools,
+            supports_embeddings=model.supports_embeddings,
+            context_window=model.context_window,
+            cost_per_1k_input_tokens=float(model.cost_per_1k_input_tokens) if model.cost_per_1k_input_tokens else None,
+            cost_per_1k_output_tokens=float(model.cost_per_1k_output_tokens) if model.cost_per_1k_output_tokens else None
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add model: {str(e)}")
+
+
+# =============================================================================
+# Configuration Management Endpoints
+# =============================================================================
+
+@router.get(
+    "/llm/config",
+    response_model=GlobalConfigResponse,
+    tags=["LLM Configuration"],
+    summary="Get global LLM configuration"
+)
+async def get_global_config(db: AsyncSession = Depends(get_db)):
+    """
+    Get current global configuration for all interaction types.
+    
+    Returns the configured model for reasoning, tools, subagents, planning, and embeddings.
+    """
+    service = LLMConfigService(db)
+    
+    try:
+        configs = await service.get_global_config()
+        
+        # Build response - ensure all interaction types have config
+        response_dict = {}
+        for interaction_type in InteractionType:
+            config = configs.get(interaction_type.value)
+            if config:
+                response_dict[interaction_type.value] = InteractionConfigResponse(
+                    interaction_type=interaction_type.value,
+                    provider_id=str(config.provider_id),
+                    model_name=config.model_name,
+                    temperature=float(config.temperature),
+                    max_tokens=config.max_tokens,
+                    updated_at=config.updated_at
+                )
+        
+        if len(response_dict) != len(InteractionType):
+            raise HTTPException(
+                status_code=500,
+                detail="Incomplete configuration - not all interaction types are configured"
+            )
+        
+        return GlobalConfigResponse(**response_dict)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch config: {str(e)}")
+
+
+@router.put(
+    "/llm/config/{interaction_type}",
+    response_model=InteractionConfigResponse,
+    tags=["LLM Configuration"],
+    summary="Update configuration for an interaction type"
+)
+async def update_interaction_config(
+    interaction_type: InteractionType,
+    config_update: InteractionConfigUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update the model configuration for a specific interaction type.
+    
+    Interaction types:
+    - reasoning: Main supervisor thinking and decision making
+    - tools: Tool calling and result parsing
+    - subagents: Specialized agent tasks
+    - planning: TODO generation and planning
+    - embeddings: Vector embeddings for RAG
+    """
+    service = LLMConfigService(db)
+    
+    try:
+        config = await service.update_interaction_config(interaction_type, config_update)
+        return InteractionConfigResponse(
+            interaction_type=interaction_type.value,
+            provider_id=str(config.provider_id),
+            model_name=config.model_name,
+            temperature=float(config.temperature),
+            max_tokens=config.max_tokens,
+            updated_at=config.updated_at
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
+
+
+@router.get(
+    "/llm/config/summary",
+    tags=["LLM Configuration"],
+    summary="Get configuration summary"
+)
+async def get_config_summary(db: AsyncSession = Depends(get_db)):
+    """
+    Get a human-readable summary of current configuration.
+    
+    Useful for debugging and displaying in UI.
+    """
+    service = LLMConfigService(db)
+    
+    try:
+        summary = await service.get_config_summary()
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch summary: {str(e)}")
+
+
+@router.get(
+    "/llm/config/validate",
+    tags=["LLM Configuration"],
+    summary="Validate all configurations"
+)
+async def validate_all_configs(db: AsyncSession = Depends(get_db)):
+    """
+    Validate that all interaction types have valid, working configurations.
+    
+    Returns validation status for each interaction type.
+    """
+    service = LLMConfigService(db)
+    
+    try:
+        results = await service.validate_all_configs()
+        return {
+            "valid": all(results.values()),
+            "results": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")

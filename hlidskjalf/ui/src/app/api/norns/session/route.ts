@@ -5,16 +5,22 @@ import crypto from "crypto";
 const COOKIE_NAME = "norns_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
-const secret =
-  process.env.NORNS_SESSION_SECRET || process.env.NEXTAUTH_SECRET;
+// Lazy initialization to avoid build-time errors when env vars aren't available
+let _encryptionKey: Buffer | null = null;
 
-if (!secret) {
-  throw new Error(
-    "Missing NORNS_SESSION_SECRET or NEXTAUTH_SECRET for session encryption",
-  );
+function getEncryptionKey(): Buffer {
+  if (_encryptionKey) return _encryptionKey;
+  
+  const secret = process.env.NORNS_SESSION_SECRET || process.env.NEXTAUTH_SECRET;
+  if (!secret) {
+    throw new Error(
+      "Missing NORNS_SESSION_SECRET or NEXTAUTH_SECRET for session encryption",
+    );
+  }
+  
+  _encryptionKey = crypto.createHash("sha256").update(secret).digest();
+  return _encryptionKey;
 }
-
-const ENCRYPTION_KEY = crypto.createHash("sha256").update(secret).digest();
 
 interface SessionPayload {
   apiUrl: string;
@@ -25,7 +31,7 @@ interface SessionPayload {
 
 function serializePayload(payload: SessionPayload): string {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
+  const cipher = crypto.createCipheriv("aes-256-gcm", getEncryptionKey(), iv);
   const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag();
@@ -40,7 +46,7 @@ function deserializePayload(token: string): SessionPayload | null {
     const ciphertext = raw.subarray(28);
     const decipher = crypto.createDecipheriv(
       "aes-256-gcm",
-      ENCRYPTION_KEY,
+      getEncryptionKey(),
       iv,
     );
     decipher.setAuthTag(authTag);

@@ -17,6 +17,10 @@ services:
   gitlab:
     image: gitlab/gitlab-ce:latest
     container_name: gitlab-sre-gitlab
+    labels:
+      - "ravenhelm.project=hlidskjalf-gitlab"
+      - "ravenhelm.service=gitlab"
+      - "ravenhelm.workload=source-control"
     hostname: gitlab.ravenhelm.test
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
@@ -127,6 +131,10 @@ services:
   gitlab-runner:
     image: gitlab/gitlab-runner:latest
     container_name: gitlab-sre-runner
+    labels:
+      - "ravenhelm.project=hlidskjalf-gitlab"
+      - "ravenhelm.service=runner"
+      - "ravenhelm.workload=ci-cd"
     volumes:
       - gitlab_runner_config:/etc/gitlab-runner
       - /var/run/docker.sock:/var/run/docker.sock

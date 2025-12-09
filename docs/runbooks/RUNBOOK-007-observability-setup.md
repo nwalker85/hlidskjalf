@@ -10,6 +10,62 @@ This runbook documents the first-time setup of the Hliðskjálf observability st
 - **Prometheus** - Metrics storage and alerting
 - **Tempo** - Distributed tracing
 - **Grafana** - Visualization and dashboards
+- **OpenTelemetry** - Frontend and backend instrumentation
+
+## Frontend Instrumentation (Added 2025-12-06)
+
+The Hliðskjálf UI is instrumented with OpenTelemetry to provide real-time performance monitoring.
+
+### What's Instrumented
+
+1. **Automatic Instrumentation:**
+   - All `fetch()` API calls (duration, status codes, endpoints)
+   - Document load events (page load times, TTFB)
+   - Resource timing (scripts, stylesheets, images)
+
+2. **Custom Metrics:**
+   - React Query cache hits/misses
+   - Component render times
+   - User interactions (clicks, navigation)
+
+3. **Traces:**
+   - Full request traces from browser → API → database
+   - Distributed tracing across microservices
+   - Error tracking with stack traces
+
+### Configuration
+
+Frontend telemetry is configured in `hlidskjalf/ui/src/lib/telemetry.ts`:
+
+```typescript
+// Exports to Grafana Alloy via OTLP HTTP
+const OTLP_ENDPOINT = 'http://alloy.ravenhelm.test:4318';
+```
+
+Telemetry is automatically initialized on app load via `TelemetryInitializer` component.
+
+### Dashboards
+
+**Hliðskjálf Frontend Performance Dashboard:**
+- Location: `observability/grafana/provisioning/dashboards/json/hlidskjalf-frontend.json`
+- URL: https://grafana.ravenhelm.test/d/hlidskjalf-frontend
+- Panels:
+  - API response times (p50, p95, p99)
+  - Page load times
+  - Error rates
+  - Request rate by endpoint
+  - Response status distribution
+  - Recent traces
+
+### Alert Rules
+
+Frontend alerts are defined in `observability/prometheus/rules/frontend-alerts.yml`:
+
+- **HighFrontendErrorRate**: Triggers when 5xx error rate > 5% for 5 minutes
+- **SlowAPIResponses**: Triggers when p95 response time > 2000ms for 10 minutes
+- **SlowPageLoad**: Triggers when p95 page load > 5000ms for 10 minutes
+- **FrontendNoTraffic**: Triggers when no requests detected for 5 minutes
+- **HighClientErrorRate**: Triggers when client exceptions > 1/sec for 5 minutes
 
 ## Prerequisites
 

@@ -19,7 +19,7 @@ services:
     image: ollama/ollama:latest
     container_name: gitlab-sre-ollama
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-ai-infra"
       - "ravenhelm.service=ollama"
       - "ravenhelm.workload=ai-local"
     ports:
@@ -48,7 +48,7 @@ services:
     image: ghcr.io/huggingface/text-generation-inference:latest
     container_name: gitlab-sre-hf-reasoning
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-ai-infra"
       - "ravenhelm.service=hf-reasoning"
       - "ravenhelm.workload=ai-local"
     ports:
@@ -78,7 +78,7 @@ services:
     image: ghcr.io/huggingface/text-generation-inference:latest
     container_name: gitlab-sre-hf-agents
     labels:
-      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.project=hlidskjalf-ai-infra"
       - "ravenhelm.service=hf-agents"
       - "ravenhelm.workload=ai-local"
     ports:

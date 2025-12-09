@@ -17,6 +17,10 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: gitlab-sre-prometheus
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=prometheus"
+      - "ravenhelm.workload=metrics"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -38,6 +42,10 @@ services:
   loki:
     image: grafana/loki:latest
     container_name: gitlab-sre-loki
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=loki"
+      - "ravenhelm.workload=logs"
     command: -config.file=/etc/loki/loki-config.yaml
     volumes:
       - ../observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
@@ -54,6 +62,10 @@ services:
   tempo:
     image: grafana/tempo:latest
     container_name: gitlab-sre-tempo
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=tempo"
+      - "ravenhelm.workload=traces"
     user: "0"  # Run as root to avoid permission issues
     command: ["-config.file=/etc/tempo/tempo-config.yaml"]
     volumes:
@@ -72,6 +84,10 @@ services:
   alloy:
     image: grafana/alloy:latest
     container_name: gitlab-sre-alloy
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=alloy"
+      - "ravenhelm.workload=collector"
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -100,7 +116,12 @@ services:
   grafana:
     image: grafana/grafana:latest
     container_name: gitlab-sre-grafana
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=grafana"
+      - "ravenhelm.workload=dashboards"
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
@@ -115,16 +136,17 @@ services:
       - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${GRAFANA_OIDC_CLIENT_SECRET}
       # Include role scope for Zitadel project roles
       - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email urn:zitadel:iam:org:project:roles
-      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.test/oauth/v2/authorize
-      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.test/oauth/v2/token
-      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.test/oidc/v1/userinfo
+      # Updated to use .dev (staging) Zitadel instance
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.dev/oauth/v2/authorize
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.dev/oauth/v2/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.dev/oidc/v1/userinfo
       - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
       # Role mapping from Zitadel project roles
       # Zitadel returns roles as: {"urn:zitadel:iam:org:project:roles": {"admin": {"349394492048015386": "Ravenhelm Platform"}}}
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'admin') && 'Admin' || contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'operator') && 'Editor' || 'Viewer'
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
       - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
-      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=false
       # Auto-create Ravenhelm org
       - GF_USERS_AUTO_ASSIGN_ORG=true
       - GF_USERS_AUTO_ASSIGN_ORG_ID=1
@@ -149,6 +171,10 @@ services:
   alertmanager:
     image: prom/alertmanager:latest
     container_name: gitlab-sre-alertmanager
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=alertmanager"
+      - "ravenhelm.workload=alerts"
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
@@ -167,6 +193,10 @@ services:
   langfuse:
     image: langfuse/langfuse:2  # v3 requires ClickHouse
     container_name: gitlab-sre-langfuse
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=langfuse"
+      - "ravenhelm.workload=llm-observability"
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
@@ -197,6 +227,10 @@ services:
   phoenix:
     image: arizephoenix/phoenix:latest
     container_name: gitlab-sre-phoenix
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=phoenix"
+      - "ravenhelm.workload=llm-observability"
     environment:
       - PHOENIX_WORKING_DIR=/data
     volumes:

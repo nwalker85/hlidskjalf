@@ -395,6 +395,577 @@ def mimir_entity(entity_id: str) -> dict[str, Any]:
 
 
 # =============================================================================
+# Procedural Memory Tools (Skills Management)
+# =============================================================================
+
+@tool
+async def skills_list(
+    role: str | None = None,
+    domain: str | None = None,
+    min_weight: float = 0.1,
+) -> list[dict[str, Any]]:
+    """
+    List all skills (procedural memories).
+    
+    Args:
+        role: Filter by role (e.g., "sre", "devops")
+        domain: Filter by domain
+        min_weight: Minimum weight threshold (default 0.1)
+        
+    Returns:
+        List of skills with metadata
+    """
+    if not _muninn:
+        return [{"error": "Muninn not initialized"}]
+    
+    from src.memory.muninn.procedural import ProceduralMemory
+    
+    proc_mem = ProceduralMemory(_muninn)
+    skills = await proc_mem.list_skills(role=role, domain=domain, min_weight=min_weight)
+    
+    return [
+        {
+            "id": s.id,
+            "name": s.features.get("name", ""),
+            "summary": s.summary,
+            "roles": s.features.get("roles", []),
+            "weight": s.weight,
+            "references": s.references,
+            "version": s.features.get("version", "1.0.0"),
+        }
+        for s in skills
+    ]
+
+
+@tool
+async def skills_retrieve(
+    query: str,
+    role: str | None = None,
+    domain: str | None = None,
+    k: int = 5,
+) -> list[dict[str, Any]]:
+    """
+    Retrieve relevant skills using RAG (semantic search).
+    
+    Supports @skill_name tags for direct lookup, e.g.:
+    - "How do I @file-editing safely?" -> returns file-editing skill directly
+    - "@terminal-commands @docker-operations" -> returns both skills
+    
+    Args:
+        query: Task description or search query (can include @skill_name tags)
+        role: Optional role filter (only for semantic search, not direct lookups)
+        domain: Optional domain filter
+        k: Number of skills to retrieve
+        
+    Returns:
+        List of relevant skills with content
+    """
+    import re
+    
+    if not _muninn:
+        logger.warning("skills_retrieve: Muninn not initialized")
+        return [{"error": "Muninn not initialized"}]
+    
+    from src.memory.muninn.procedural import ProceduralMemory
+    
+    proc_mem = ProceduralMemory(_muninn)
+    
+    # Parse @skill_name tags for direct lookup
+    skill_tags = re.findall(r'@([\w-]+)', query)
+    direct_skills = []
+    
+    if skill_tags:
+        # Direct lookup for tagged skills
+        direct_skills = proc_mem.get_skills_by_names(skill_tags)
+        logger.info(f"skills_retrieve: direct lookup for {skill_tags} found {len(direct_skills)} skills")
+        
+        # If we found all requested skills via direct lookup, return them
+        if len(direct_skills) >= k or len(direct_skills) == len(skill_tags):
+            return [
+                {
+                    "id": s.id,
+                    "name": s.features.get("name", ""),
+                    "summary": s.summary,
+                    "content": s.content,
+                    "roles": s.features.get("roles", []),
+                    "weight": s.weight,
+                    "dependencies": s.features.get("dependencies", []),
+                }
+                for s in direct_skills[:k]
+            ]
+    
+    # Fall back to semantic search for remaining slots
+    remaining_k = k - len(direct_skills)
+    if remaining_k > 0:
+        # Remove @tags from query for semantic search
+        clean_query = re.sub(r'@[\w-]+\s*', '', query).strip()
+        if clean_query:
+            semantic_skills = await proc_mem.retrieve_skills(
+                query=clean_query, 
+                role=role, 
+                domain=domain, 
+                k=remaining_k
+            )
+            # Combine direct lookups with semantic results (avoid duplicates)
+            direct_ids = {s.id for s in direct_skills}
+            for s in semantic_skills:
+                if s.id not in direct_ids:
+                    direct_skills.append(s)
+    
+    logger.info(f"skills_retrieve: returning {len(direct_skills)} total skills")
+    
+    return [
+        {
+            "id": s.id,
+            "name": s.features.get("name", ""),
+            "summary": s.summary,
+            "content": s.content,
+            "roles": s.features.get("roles", []),
+            "weight": s.weight,
+            "dependencies": s.features.get("dependencies", []),
+        }
+        for s in direct_skills[:k]
+    ]
+
+
+@tool
+async def skills_add(
+    name: str,
+    content: str,
+    roles: list[str],
+    summary: str,
+    domain: str = "ravenhelm",
+    tags: list[str] | None = None,
+    dependencies: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Add a new skill to procedural memory.
+    
+    Args:
+        name: Skill identifier (kebab-case)
+        content: Full skill instructions (markdown)
+        roles: Applicable roles (e.g., ["sre", "devops"])
+        summary: Brief description
+        domain: Knowledge domain
+        tags: Optional tags
+        dependencies: Optional prerequisite skills
+        
+    Returns:
+        Created skill info
+    """
+    if not _muninn:
+        return {"error": "Muninn not initialized"}
+    
+    from src.memory.muninn.procedural import ProceduralMemory
+    
+    proc_mem = ProceduralMemory(_muninn)
+    memory_id = await proc_mem.add_skill(
+        name=name,
+        content=content,
+        roles=roles,
+        summary=summary,
+        domain=domain,
+        tags=tags or [],
+        dependencies=dependencies or [],
+    )
+    
+    return {"success": True, "skill_id": memory_id, "name": name}
+
+
+@tool
+async def skills_update(
+    skill_id: str,
+    content: str | None = None,
+    summary: str | None = None,
+    roles: list[str] | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Update an existing skill.
+    
+    Args:
+        skill_id: Skill memory ID
+        content: New content (optional)
+        summary: New summary (optional)
+        roles: New roles (optional)
+        tags: New tags (optional)
+        
+    Returns:
+        Update status
+    """
+    if not _muninn:
+        return {"error": "Muninn not initialized"}
+    
+    from src.memory.muninn.procedural import ProceduralMemory
+    
+    proc_mem = ProceduralMemory(_muninn)
+    success = await proc_mem.update_skill(
+        skill_id=skill_id,
+        content=content,
+        summary=summary,
+        roles=roles,
+        tags=tags,
+    )
+    
+    return {"success": success, "skill_id": skill_id}
+
+
+@tool
+async def skills_delete(skill_id: str) -> dict[str, Any]:
+    """
+    Delete a skill (sets weight to 0).
+    
+    Args:
+        skill_id: Skill memory ID
+        
+    Returns:
+        Deletion status
+    """
+    if not _muninn:
+        return {"error": "Muninn not initialized"}
+    
+    from src.memory.muninn.procedural import ProceduralMemory
+    
+    proc_mem = ProceduralMemory(_muninn)
+    success = await proc_mem.delete_skill(skill_id)
+    
+    return {"success": success, "skill_id": skill_id}
+
+
+# =============================================================================
+# Document Ingestion Tools
+# =============================================================================
+
+@tool
+async def documents_crawl_page(
+    url: str,
+    domain: str = "external",
+) -> dict[str, Any]:
+    """
+    Crawl a single web page and store in semantic memory.
+    
+    Uses Firecrawl to extract LLM-friendly content.
+    
+    Args:
+        url: Page URL to crawl
+        domain: Domain classification
+        
+    Returns:
+        Crawl results with memory IDs
+    """
+    from src.services.document_ingestion import DocumentIngestionService
+    
+    service = DocumentIngestionService()
+    memory_ids = await service.crawl_page(url=url, domain=domain)
+    
+    return {
+        "success": True,
+        "url": url,
+        "chunks": len(memory_ids),
+        "memory_ids": memory_ids,
+    }
+
+
+@tool
+async def documents_crawl_site(
+    url: str,
+    domain: str = "external",
+    max_depth: int = 2,
+    max_pages: int = 50,
+) -> dict[str, Any]:
+    """
+    Crawl an entire website and store pages in semantic memory.
+    
+    Args:
+        url: Root URL to crawl
+        domain: Domain classification
+        max_depth: Maximum link depth
+        max_pages: Maximum pages to crawl
+        
+    Returns:
+        Crawl statistics
+    """
+    from src.services.document_ingestion import DocumentIngestionService
+    
+    service = DocumentIngestionService()
+    result = await service.crawl_site(
+        url=url,
+        domain=domain,
+        max_depth=max_depth,
+        max_pages=max_pages,
+    )
+    
+    return result
+
+
+@tool
+async def documents_search(
+    query: str,
+    domain: str | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """
+    Search ingested documents.
+    
+    Args:
+        query: Search query
+        domain: Optional domain filter
+        limit: Maximum results
+        
+    Returns:
+        Matching documents
+    """
+    from src.services.document_ingestion import DocumentIngestionService
+    
+    service = DocumentIngestionService()
+    results = await service.search_documents(query=query, domain=domain, limit=limit)
+    
+    return results
+
+
+@tool
+async def documents_stats(domain: str | None = None) -> dict[str, Any]:
+    """
+    Get statistics about ingested documents.
+    
+    Args:
+        domain: Optional domain filter
+        
+    Returns:
+        Document statistics
+    """
+    from src.services.document_ingestion import DocumentIngestionService
+    
+    service = DocumentIngestionService()
+    stats = await service.get_crawl_stats(domain=domain)
+    
+    return stats
+
+
+# =============================================================================
+# Graph Query Tools (Neo4j) - with graceful fallbacks
+# =============================================================================
+
+# Cache for structural memory to avoid recreating connection each call
+_structural_memory = None
+
+
+async def _get_structural_memory():
+    """Get or create structural memory instance with env-based config."""
+    global _structural_memory
+    
+    import os
+    
+    if _structural_memory is None:
+        from src.memory.muninn.structural import StructuralMemory
+        
+        neo4j_uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7688")
+        neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+        neo4j_password = os.environ.get("NEO4J_PASSWORD", "ravenhelm")
+        memgraph_uri = os.environ.get("MEMGRAPH_URI")
+        
+        _structural_memory = StructuralMemory(
+            neo4j_uri=neo4j_uri,
+            neo4j_auth=(neo4j_user, neo4j_password),
+            memgraph_uri=memgraph_uri,
+        )
+    
+    return _structural_memory
+
+
+async def _check_neo4j_available() -> bool:
+    """Check if Neo4j is available for queries."""
+    try:
+        structural = await _get_structural_memory()
+        driver = await structural._get_neo4j()
+        if driver is None:
+            return False
+        # Try a simple query
+        async with driver.session() as session:
+            await session.run("RETURN 1")
+        return True
+    except Exception as e:
+        logger.warning(f"Neo4j not available: {e}")
+        return False
+
+
+def _fallback_skill_dependencies(skill_id: str) -> list[dict[str, Any]]:
+    """Fallback: get dependencies from Muninn procedural memory."""
+    if not _muninn:
+        return []
+    
+    # Look up skill in local memory and extract dependencies from features
+    for mem in _muninn._memory_index.values():
+        if mem.id == skill_id or mem.features.get("name") == skill_id:
+            deps = mem.features.get("dependencies", [])
+            return [{"name": dep, "source": "muninn_features"} for dep in deps]
+    return []
+
+
+def _fallback_skills_for_role(role_id: str) -> list[dict[str, Any]]:
+    """Fallback: get skills from Muninn procedural memory filtered by role."""
+    if not _muninn:
+        return []
+    
+    from src.memory.muninn.store import MemoryType
+    
+    skills = []
+    for mem in _muninn._memory_index.values():
+        if mem.type == MemoryType.PROCEDURAL and mem.topic == "skill":
+            roles = mem.features.get("roles", [])
+            if role_id in roles or not role_id:
+                skills.append({
+                    "id": mem.id,
+                    "name": mem.features.get("name", ""),
+                    "weight": mem.weight,
+                    "source": "muninn_fallback",
+                })
+    
+    return sorted(skills, key=lambda x: x.get("weight", 0), reverse=True)
+
+
+@tool
+async def graph_skill_dependencies(skill_id: str, recursive: bool = True) -> list[dict[str, Any]]:
+    """
+    Get dependencies for a skill from Neo4j graph.
+    
+    Falls back to Muninn procedural memory if Neo4j is unavailable.
+    
+    Args:
+        skill_id: Skill memory ID or name
+        recursive: Include transitive dependencies
+        
+    Returns:
+        List of required skills
+    """
+    # Try Neo4j first
+    if await _check_neo4j_available():
+        try:
+            structural = await _get_structural_memory()
+            deps = await structural.get_skill_dependencies(skill_id, recursive=recursive)
+            
+            if deps:
+                return [
+                    {
+                        "id": dep.node_id,
+                        "name": dep.name,
+                        "summary": dep.properties.get("summary", ""),
+                        "source": "neo4j",
+                    }
+                    for dep in deps
+                ]
+        except Exception as e:
+            logger.warning(f"Neo4j query failed, using fallback: {e}")
+    
+    # Fallback to Muninn
+    fallback_deps = _fallback_skill_dependencies(skill_id)
+    if fallback_deps:
+        return fallback_deps
+    
+    return [{
+        "note": "Neo4j not available and no dependencies found in Muninn",
+        "skill_id": skill_id,
+        "hint": "Ensure Neo4j is running or dependencies are defined in skill YAML frontmatter",
+    }]
+
+
+@tool
+async def graph_skills_for_role(role_id: str, include_inherited: bool = True) -> list[dict[str, Any]]:
+    """
+    Get all skills available to a role from Neo4j graph.
+    
+    Falls back to Muninn procedural memory if Neo4j is unavailable.
+    
+    Args:
+        role_id: Role identifier (e.g., "sre", "devops")
+        include_inherited: Include parent role skills
+        
+    Returns:
+        List of authorized skills
+    """
+    # Try Neo4j first
+    if await _check_neo4j_available():
+        try:
+            structural = await _get_structural_memory()
+            skills = await structural.get_skills_for_role(role_id, include_inherited=include_inherited)
+            
+            if skills:
+                return [
+                    {
+                        "id": skill.node_id,
+                        "name": skill.name,
+                        "weight": skill.properties.get("weight", 0.5),
+                        "source": "neo4j",
+                    }
+                    for skill in skills
+                ]
+        except Exception as e:
+            logger.warning(f"Neo4j query failed, using fallback: {e}")
+    
+    # Fallback to Muninn
+    fallback_skills = _fallback_skills_for_role(role_id)
+    if fallback_skills:
+        return fallback_skills
+    
+    return [{
+        "note": f"Neo4j not available and no skills found in Muninn for role '{role_id}'",
+        "hint": "Ensure Neo4j is running or skills have roles defined in YAML frontmatter",
+    }]
+
+
+@tool
+async def graph_skill_workflow(start_skill_id: str) -> list[dict[str, Any]]:
+    """
+    Get typical workflow sequence starting from a skill.
+    
+    Follows FOLLOWS relationships to build workflow chain.
+    Falls back to showing just the starting skill if Neo4j is unavailable.
+    
+    Args:
+        start_skill_id: Starting skill ID or name
+        
+    Returns:
+        Ordered workflow steps
+    """
+    # Try Neo4j first
+    if await _check_neo4j_available():
+        try:
+            structural = await _get_structural_memory()
+            workflow = await structural.get_skill_workflow(start_skill_id)
+            
+            if workflow:
+                return [
+                    {
+                        "id": step.node_id,
+                        "name": step.name,
+                        "summary": step.properties.get("summary", ""),
+                        "source": "neo4j",
+                    }
+                    for step in workflow
+                ]
+        except Exception as e:
+            logger.warning(f"Neo4j query failed, using fallback: {e}")
+    
+    # Fallback: just return the skill itself from Muninn
+    if _muninn:
+        for mem in _muninn._memory_index.values():
+            if mem.id == start_skill_id or mem.features.get("name") == start_skill_id:
+                return [{
+                    "id": mem.id,
+                    "name": mem.features.get("name", start_skill_id),
+                    "summary": mem.summary or "",
+                    "source": "muninn_fallback",
+                    "note": "Workflow relationships require Neo4j - showing single skill only",
+                }]
+    
+    return [{
+        "note": "Neo4j not available and skill not found in Muninn",
+        "skill_id": start_skill_id,
+        "hint": "Ensure Neo4j is running for workflow queries",
+    }]
+
+
+# =============================================================================
 # Ollama Tools (Local LLM)
 # =============================================================================
 
@@ -516,22 +1087,37 @@ async def ollama_chat(
 # =============================================================================
 
 MEMORY_TOOLS = [
-    # Huginn
+    # Huginn (State)
     huginn_perceive,
     huginn_set_flag,
-    # Frigg
+    # Frigg (Context)
     frigg_divine,
     frigg_update_tags,
-    # Muninn
+    # Muninn (Memory)
     muninn_recall,
     muninn_remember,
-    # Hel
+    # Hel (Governance)
     hel_reinforce,
     hel_stats,
-    # Mímir
+    # Mímir (Domain Knowledge)
     mimir_consult,
     mimir_can_act,
     mimir_entity,
+    # Procedural Memory (Skills)
+    skills_list,
+    skills_retrieve,
+    skills_add,
+    skills_update,
+    skills_delete,
+    # Document Ingestion
+    documents_crawl_page,
+    documents_crawl_site,
+    documents_search,
+    documents_stats,
+    # Graph Queries (Neo4j)
+    graph_skill_dependencies,
+    graph_skills_for_role,
+    graph_skill_workflow,
     # Ollama (Local LLM)
     ollama_analyze,
     ollama_embed,

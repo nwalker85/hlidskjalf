@@ -145,6 +145,43 @@ class PlatformOverviewInput(BaseModel):
     include_health: bool = Field(default=True, description="Include health status")
 
 
+async def _load_port_registry() -> dict:
+    """Load the port registry YAML file."""
+    import yaml
+    registry_path = WORKSPACE_ROOT / "config" / "port_registry.yaml"
+    if not await _path_exists(registry_path):
+        return {}
+    content = await _read_text(registry_path)
+    return yaml.safe_load(content) or {}
+
+
+async def _get_docker_containers() -> list[dict]:
+    """Get running Docker containers."""
+    import subprocess
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}\t{{.Ports}}"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            return []
+        containers = []
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                parts = line.split('\t')
+                containers.append({
+                    "name": parts[0] if len(parts) > 0 else "",
+                    "status": parts[1] if len(parts) > 1 else "",
+                    "ports": parts[2] if len(parts) > 2 else "",
+                })
+        return containers
+    except Exception:
+        return []
+
+
 @tool
 async def get_platform_overview(include_health: bool = True) -> dict:
     """
@@ -153,11 +190,67 @@ async def get_platform_overview(include_health: bool = True) -> dict:
     Returns an overview of all projects, deployments, and their health status.
     Use this to understand the current state of the platform.
     """
-    # This will be injected with the actual session at runtime
-    return {
-        "status": "This tool requires database session injection",
-        "hint": "Use NornsAgent.invoke() with proper context"
+    registry = await _load_port_registry()
+    containers = await _get_docker_containers() if include_health else []
+    running_names = {c["name"] for c in containers}
+    
+    # Build overview from registry
+    overview = {
+        "workspace": str(WORKSPACE_ROOT),
+        "platform_services": [],
+        "personal_projects": [],
+        "work_projects": [],
+        "shared_resources": [],
+        "infrastructure": {
+            "ports": registry.get("ports", [])[:10],  # First 10 ports
+            "ranges": registry.get("ranges", {}),
+        }
     }
+    
+    # Platform services
+    for name, config in registry.get("platform", {}).items():
+        service = {
+            "name": name,
+            "domain": config.get("domain", ""),
+            "api_port": config.get("api_port"),
+            "ui_port": config.get("ui_port"),
+            "description": config.get("description", ""),
+        }
+        if include_health:
+            service["running"] = any(name.replace("-", "") in c.lower() or name in c.lower() for c in running_names)
+        overview["platform_services"].append(service)
+    
+    # Personal projects
+    for name, config in registry.get("personal", {}).items():
+        project = {
+            "name": name,
+            "realm": config.get("realm", "midgard"),
+            "domain": config.get("domain", ""),
+            "status": config.get("status", "unknown"),
+            "description": config.get("description", ""),
+        }
+        overview["personal_projects"].append(project)
+    
+    # Work projects
+    for name, config in registry.get("work", {}).items():
+        project = {
+            "name": name,
+            "realm": config.get("realm", "alfheim"),
+            "domain": config.get("domain", ""),
+            "status": config.get("status", "unknown"),
+            "description": config.get("description", ""),
+        }
+        overview["work_projects"].append(project)
+    
+    # Shared resources
+    for name, config in registry.get("shared", {}).items():
+        overview["shared_resources"].append({
+            "name": name,
+            "type": config.get("type", ""),
+            "description": config.get("description", ""),
+        })
+    
+    return overview
 
 
 @tool
@@ -166,11 +259,35 @@ async def list_projects(realm: Optional[str] = None) -> list[dict]:
     [Verðandi] List all projects registered in the platform.
     
     Args:
-        realm: Optional realm filter (midgard, alfheim, asgard, etc.)
+        realm: Optional realm filter (midgard, alfheim, asgard, jotunheim, etc.)
     
     Returns a list of all projects with their current deployment status.
     """
-    return {"status": "requires_injection"}
+    registry = await _load_port_registry()
+    projects = []
+    
+    # Collect all projects
+    for category in ["platform", "personal", "work", "shared"]:
+        for name, config in registry.get(category, {}).items():
+            project = {
+                "name": name,
+                "category": category,
+                "realm": config.get("realm", "midgard" if category == "personal" else "alfheim"),
+                "domain": config.get("domain", ""),
+                "status": config.get("status", "active" if category == "platform" else "unknown"),
+                "description": config.get("description", ""),
+                "path": config.get("path", ""),
+                "api_port": config.get("api_port"),
+                "ui_port": config.get("ui_port"),
+            }
+            
+            # Filter by realm if specified
+            if realm and project["realm"] != realm:
+                continue
+                
+            projects.append(project)
+    
+    return projects
 
 
 @tool
@@ -179,11 +296,51 @@ async def get_project_details(project_id: str) -> dict:
     [Verðandi] Get detailed information about a specific project.
     
     Args:
-        project_id: The ID of the project (e.g., "saaa", "ravenmaskos")
+        project_id: The ID of the project (e.g., "hlidskjalf-api", "agentswarm", "jarvis")
     
     Returns project configuration, port allocations, and deployment history.
     """
-    return {"status": "requires_injection", "project_id": project_id}
+    registry = await _load_port_registry()
+    
+    # Search through all categories
+    for category in ["platform", "personal", "work", "shared"]:
+        projects = registry.get(category, {})
+        if project_id in projects:
+            config = projects[project_id]
+            return {
+                "name": project_id,
+                "category": category,
+                "found": True,
+                "path": config.get("path", ""),
+                "domain": config.get("domain", ""),
+                "domain_aliases": config.get("domain_aliases", []),
+                "api_port": config.get("api_port"),
+                "ui_port": config.get("ui_port"),
+                "realm": config.get("realm", ""),
+                "status": config.get("status", ""),
+                "description": config.get("description", ""),
+                "git_remote": config.get("git_remote", ""),
+                "health_endpoint": config.get("health_endpoint", ""),
+                "services": config.get("services", []),
+                "note": config.get("note", ""),
+            }
+    
+    # Check if it's a partial match
+    for category in ["platform", "personal", "work", "shared"]:
+        for name, config in registry.get(category, {}).items():
+            if project_id.lower() in name.lower():
+                return {
+                    "name": name,
+                    "category": category,
+                    "found": True,
+                    "partial_match": True,
+                    "searched_for": project_id,
+                    "path": config.get("path", ""),
+                    "domain": config.get("domain", ""),
+                    "description": config.get("description", ""),
+                }
+    
+    return {"found": False, "project_id": project_id, "hint": "Try list_projects() to see available projects"}
 
 
 @tool
@@ -194,12 +351,48 @@ async def check_deployment_health(deployment_id: str) -> dict:
     Performs an immediate health check and returns the results.
     Use this when you need current, real-time health information.
     """
-    return {"status": "requires_injection", "deployment_id": deployment_id}
+    containers = await _get_docker_containers()
+    
+    # Find matching container(s)
+    matches = []
+    for c in containers:
+        if deployment_id.lower() in c["name"].lower():
+            matches.append({
+                "name": c["name"],
+                "status": c["status"],
+                "ports": c["ports"],
+                "healthy": "Up" in c["status"] and "(healthy)" in c["status"].lower() if "health" in c["status"].lower() else "Up" in c["status"],
+            })
+    
+    if not matches:
+        return {
+            "found": False,
+            "deployment_id": deployment_id,
+            "hint": "No containers found matching this deployment ID"
+        }
+    
+    return {
+        "found": True,
+        "deployment_id": deployment_id,
+        "containers": matches,
+        "all_healthy": all(m["healthy"] for m in matches),
+    }
 
 
 # =============================================================================
 # URÐR'S TOOLS — Analyzing the Past
 # =============================================================================
+
+def _parse_time_range(time_range: str) -> int:
+    """Parse time range string to seconds."""
+    import re
+    match = re.match(r'^(\d+)([smhd])$', time_range.lower())
+    if not match:
+        return 3600  # Default 1 hour
+    value, unit = int(match.group(1)), match.group(2)
+    multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+    return value * multipliers.get(unit, 3600)
+
 
 @tool
 async def analyze_logs(
@@ -217,11 +410,81 @@ async def analyze_logs(
     
     Returns log analysis with patterns, errors, and insights.
     """
-    return {
-        "status": "requires_injection",
-        "project_id": project_id,
-        "time_range": time_range
-    }
+    import httpx
+    import time
+    
+    seconds = _parse_time_range(time_range)
+    end_time = int(time.time())
+    start_time = end_time - seconds
+    
+    # Build LogQL query - search for container name matching project_id
+    level_filter = ""
+    if log_level == "error":
+        level_filter = '|~ "(?i)(error|err|fatal|panic)"'
+    elif log_level == "warn":
+        level_filter = '|~ "(?i)(warn|warning|error|err|fatal|panic)"'
+    elif log_level == "info":
+        level_filter = '|~ "(?i)(info|warn|warning|error|err|fatal|panic)"'
+    
+    query = f'{{container_name=~".*{project_id}.*"}} {level_filter}'
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                "http://loki:3100/loki/api/v1/query_range",
+                params={
+                    "query": query,
+                    "start": start_time * 1_000_000_000,  # nanoseconds
+                    "end": end_time * 1_000_000_000,
+                    "limit": 100,
+                },
+            )
+            
+            if resp.status_code != 200:
+                return {
+                    "error": f"Loki query failed: {resp.status_code}",
+                    "project_id": project_id,
+                    "fallback": "Loki may not be running or accessible",
+                }
+            
+            data = resp.json()
+            results = data.get("data", {}).get("result", [])
+            
+            # Extract log lines
+            log_entries = []
+            for stream in results:
+                labels = stream.get("stream", {})
+                for timestamp, line in stream.get("values", []):
+                    log_entries.append({
+                        "timestamp": timestamp,
+                        "container": labels.get("container_name", "unknown"),
+                        "line": line[:500],  # Truncate long lines
+                    })
+            
+            # Simple pattern analysis
+            error_count = sum(1 for e in log_entries if any(x in e["line"].lower() for x in ["error", "err", "fatal"]))
+            warn_count = sum(1 for e in log_entries if "warn" in e["line"].lower())
+            
+            return {
+                "project_id": project_id,
+                "time_range": time_range,
+                "log_level": log_level,
+                "total_entries": len(log_entries),
+                "error_count": error_count,
+                "warning_count": warn_count,
+                "recent_logs": log_entries[:20],  # Last 20 entries
+                "analysis": {
+                    "has_errors": error_count > 0,
+                    "error_rate": f"{(error_count / len(log_entries) * 100):.1f}%" if log_entries else "0%",
+                },
+            }
+            
+    except Exception as e:
+        return {
+            "error": f"Failed to query logs: {str(e)}",
+            "project_id": project_id,
+            "hint": "Loki may not be running. Check docker logs for loki service.",
+        }
 
 
 @tool
@@ -234,7 +497,55 @@ async def get_deployment_history(
     
     Returns past deployments, their outcomes, and any issues encountered.
     """
-    return {"status": "requires_injection", "project_id": project_id}
+    import subprocess
+    
+    # Get Docker events for the project
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "docker", "events", "--since", "168h", "--until", "0s",
+                "--filter", f"container={project_id}",
+                "--filter", "event=start",
+                "--filter", "event=stop",
+                "--filter", "event=die",
+                "--format", "{{.Time}} {{.Action}} {{.Actor.Attributes.name}}"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        events = []
+        for line in result.stdout.strip().split('\n')[:limit]:
+            if line:
+                parts = line.split(' ', 2)
+                if len(parts) >= 3:
+                    events.append({
+                        "timestamp": parts[0],
+                        "action": parts[1],
+                        "container": parts[2],
+                    })
+        
+        if events:
+            return {
+                "project_id": project_id,
+                "events": events,
+                "total": len(events),
+            }
+            
+    except Exception:
+        pass
+    
+    # Fallback: Just show current container state
+    containers = await _get_docker_containers()
+    matching = [c for c in containers if project_id.lower() in c["name"].lower()]
+    
+    return {
+        "project_id": project_id,
+        "current_state": matching,
+        "history": "Docker events not available - showing current state only",
+    }
 
 
 @tool
@@ -247,7 +558,76 @@ async def get_health_trends(
     
     Returns health metrics over time, identifying degradation patterns.
     """
-    return {"status": "requires_injection", "deployment_id": deployment_id}
+    import httpx
+    
+    seconds = _parse_time_range(time_range)
+    step = max(seconds // 100, 60)  # At most 100 data points
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Query container CPU usage
+            cpu_resp = await client.get(
+                "http://prometheus:9090/api/v1/query_range",
+                params={
+                    "query": f'rate(container_cpu_usage_seconds_total{{name=~".*{deployment_id}.*"}}[5m])',
+                    "start": f"-{time_range}",
+                    "end": "now",
+                    "step": f"{step}s",
+                },
+            )
+            
+            # Query container memory usage
+            mem_resp = await client.get(
+                "http://prometheus:9090/api/v1/query_range",
+                params={
+                    "query": f'container_memory_usage_bytes{{name=~".*{deployment_id}.*"}}',
+                    "start": f"-{time_range}",
+                    "end": "now",
+                    "step": f"{step}s",
+                },
+            )
+            
+            trends = {
+                "deployment_id": deployment_id,
+                "time_range": time_range,
+                "metrics": {},
+            }
+            
+            if cpu_resp.status_code == 200:
+                cpu_data = cpu_resp.json().get("data", {}).get("result", [])
+                if cpu_data:
+                    values = [float(v[1]) for v in cpu_data[0].get("values", []) if v[1] != "NaN"]
+                    if values:
+                        trends["metrics"]["cpu"] = {
+                            "avg": f"{sum(values) / len(values) * 100:.2f}%",
+                            "max": f"{max(values) * 100:.2f}%",
+                            "min": f"{min(values) * 100:.2f}%",
+                            "trend": "increasing" if values[-1] > values[0] else "stable" if abs(values[-1] - values[0]) < 0.01 else "decreasing",
+                        }
+            
+            if mem_resp.status_code == 200:
+                mem_data = mem_resp.json().get("data", {}).get("result", [])
+                if mem_data:
+                    values = [float(v[1]) for v in mem_data[0].get("values", []) if v[1] != "NaN"]
+                    if values:
+                        trends["metrics"]["memory"] = {
+                            "avg": f"{sum(values) / len(values) / 1024 / 1024:.1f} MB",
+                            "max": f"{max(values) / 1024 / 1024:.1f} MB",
+                            "min": f"{min(values) / 1024 / 1024:.1f} MB",
+                            "trend": "increasing" if values[-1] > values[0] * 1.1 else "stable" if abs(values[-1] - values[0]) / max(values[0], 1) < 0.1 else "decreasing",
+                        }
+            
+            if not trends["metrics"]:
+                trends["note"] = "No metrics found. Prometheus may not be scraping this deployment."
+            
+            return trends
+            
+    except Exception as e:
+        return {
+            "error": f"Failed to query metrics: {str(e)}",
+            "deployment_id": deployment_id,
+            "hint": "Prometheus may not be running or accessible at prometheus:9090",
+        }
 
 
 # =============================================================================
@@ -273,11 +653,56 @@ async def allocate_ports(
     
     Returns the allocated ports for each service.
     """
+    import yaml
+    
+    registry = await _load_port_registry()
+    if not registry:
+        return {"error": "Could not load port registry"}
+    
+    # Determine which range to use
+    realm_to_range = {
+        "midgard": "personal_api",
+        "alfheim": "work_api",
+        "jotunheim": "sandbox_api",
+    }
+    range_name = realm_to_range.get(realm, "sandbox_api")
+    
+    # Get current next_available ports
+    next_available = registry.get("next_available", {})
+    api_port = next_available.get(range_name, 8300)
+    ui_port = next_available.get(f"{range_name.replace('_api', '_ui')}", 3300)
+    
+    # Allocate ports
+    allocations = []
+    for svc in services:
+        svc_name = svc.get("name", "service")
+        svc_type = svc.get("type", "http")
+        
+        if svc_type in ["frontend", "ui"]:
+            allocations.append({
+                "service": svc_name,
+                "port": ui_port,
+                "type": "ui",
+            })
+            ui_port += 1
+        else:
+            allocations.append({
+                "service": svc_name,
+                "port": api_port,
+                "type": "api",
+            })
+            api_port += 1
+    
+    # Update next_available (but don't write yet - just propose)
     return {
-        "status": "requires_injection",
         "project_id": project_id,
-        "services": services,
-        "realm": realm
+        "realm": realm,
+        "allocations": allocations,
+        "proposed_update": {
+            range_name: api_port,
+            f"{range_name.replace('_api', '_ui')}": ui_port,
+        },
+        "note": "Ports allocated but not persisted. Use register_project to save.",
     }
 
 
@@ -289,7 +714,66 @@ async def generate_nginx_config(project_id: str) -> str:
     Generates the nginx server blocks needed to route traffic to the project.
     Returns the configuration as a string.
     """
-    return "# Requires injection"
+    # Get project details
+    project = await get_project_details.ainvoke({"project_id": project_id})
+    
+    if not project.get("found"):
+        return f"# Error: Project '{project_id}' not found in registry"
+    
+    domain = project.get("domain", f"{project_id}.ravenhelm.test")
+    api_port = project.get("api_port", 8000)
+    ui_port = project.get("ui_port")
+    
+    config = f"""# Auto-generated nginx configuration for {project_id}
+# Generated by Norns [Skuld]
+
+upstream {project_id}_api {{
+    server 127.0.0.1:{api_port};
+}}
+
+server {{
+    listen 443 ssl http2;
+    server_name {domain};
+
+    ssl_certificate /etc/nginx/certs/ravenhelm.test.crt;
+    ssl_certificate_key /etc/nginx/certs/ravenhelm.test.key;
+
+    location / {{
+        proxy_pass http://{project_id}_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+}}
+"""
+    
+    if ui_port:
+        config += f"""
+upstream {project_id}_ui {{
+    server 127.0.0.1:{ui_port};
+}}
+
+server {{
+    listen 443 ssl http2;
+    server_name app.{domain};
+
+    ssl_certificate /etc/nginx/certs/ravenhelm.test.crt;
+    ssl_certificate_key /etc/nginx/certs/ravenhelm.test.key;
+
+    location / {{
+        proxy_pass http://{project_id}_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }}
+}}
+"""
+    
+    return config
 
 
 @tool
@@ -305,7 +789,101 @@ async def predict_issues(project_id: Optional[str] = None) -> dict:
     Args:
         project_id: Optional - focus on a specific project, or None for platform-wide
     """
-    return {"status": "requires_injection", "project_id": project_id}
+    import httpx
+    
+    predictions = {
+        "project_id": project_id or "platform-wide",
+        "predictions": [],
+        "risk_level": "low",
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Check disk space
+            disk_resp = await client.get(
+                "http://prometheus:9090/api/v1/query",
+                params={"query": '(node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100'},
+            )
+            
+            if disk_resp.status_code == 200:
+                disk_data = disk_resp.json().get("data", {}).get("result", [])
+                for result in disk_data:
+                    pct_free = float(result.get("value", [0, 100])[1])
+                    if pct_free < 20:
+                        predictions["predictions"].append({
+                            "type": "disk_space",
+                            "severity": "high" if pct_free < 10 else "medium",
+                            "message": f"Disk space low: {pct_free:.1f}% free",
+                            "recommendation": "Clean up old Docker images and logs",
+                        })
+                        predictions["risk_level"] = "high" if pct_free < 10 else "medium"
+            
+            # Check memory pressure
+            mem_resp = await client.get(
+                "http://prometheus:9090/api/v1/query",
+                params={"query": '(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100'},
+            )
+            
+            if mem_resp.status_code == 200:
+                mem_data = mem_resp.json().get("data", {}).get("result", [])
+                for result in mem_data:
+                    pct_free = float(result.get("value", [0, 100])[1])
+                    if pct_free < 20:
+                        predictions["predictions"].append({
+                            "type": "memory",
+                            "severity": "high" if pct_free < 10 else "medium",
+                            "message": f"Memory pressure: {pct_free:.1f}% available",
+                            "recommendation": "Consider stopping unused containers or adding swap",
+                        })
+                        if pct_free < 10:
+                            predictions["risk_level"] = "high"
+                        elif predictions["risk_level"] != "high":
+                            predictions["risk_level"] = "medium"
+            
+            # Check container restart counts
+            if project_id:
+                query = f'changes(container_start_time_seconds{{name=~".*{project_id}.*"}}[1h])'
+            else:
+                query = 'changes(container_start_time_seconds[1h]) > 3'
+            
+            restart_resp = await client.get(
+                "http://prometheus:9090/api/v1/query",
+                params={"query": query},
+            )
+            
+            if restart_resp.status_code == 200:
+                restart_data = restart_resp.json().get("data", {}).get("result", [])
+                for result in restart_data:
+                    container = result.get("metric", {}).get("name", "unknown")
+                    restarts = int(float(result.get("value", [0, 0])[1]))
+                    if restarts > 3:
+                        predictions["predictions"].append({
+                            "type": "stability",
+                            "severity": "high" if restarts > 10 else "medium",
+                            "message": f"Container '{container}' restarted {restarts} times in last hour",
+                            "recommendation": "Check container logs for crash reasons",
+                        })
+            
+            if not predictions["predictions"]:
+                predictions["predictions"].append({
+                    "type": "all_clear",
+                    "severity": "info",
+                    "message": "No immediate issues detected",
+                    "recommendation": "Continue monitoring",
+                })
+            
+            return predictions
+            
+    except Exception as e:
+        return {
+            "error": f"Prediction analysis failed: {str(e)}",
+            "hint": "Prometheus may not be accessible",
+            "fallback_prediction": {
+                "type": "unknown",
+                "severity": "info",
+                "message": "Unable to analyze metrics - recommend manual health checks",
+            },
+        }
 
 
 @tool
@@ -325,12 +903,81 @@ async def plan_deployment(
     
     Does NOT execute the deployment - just plans it.
     """
-    return {
-        "status": "requires_injection",
+    # Get current project state
+    project = await get_project_details.ainvoke({"project_id": project_id})
+    current_health = await check_deployment_health.ainvoke({"deployment_id": project_id})
+    
+    plan = {
         "project_id": project_id,
         "target_realm": target_realm,
-        "version": version
+        "version": version or "latest",
+        "timestamp": asyncio.get_event_loop().time(),
+        "steps": [],
+        "pre_flight_checks": [],
+        "rollback_strategy": [],
     }
+    
+    # Pre-flight checks
+    if project.get("found"):
+        plan["pre_flight_checks"].append({
+            "check": "project_exists",
+            "status": "passed",
+            "details": f"Project registered at {project.get('domain')}",
+        })
+    else:
+        plan["pre_flight_checks"].append({
+            "check": "project_exists",
+            "status": "failed",
+            "details": "Project not found in registry - needs registration first",
+        })
+        plan["steps"].append({
+            "order": 1,
+            "action": "register_project",
+            "description": f"Register {project_id} in the platform",
+        })
+    
+    if current_health.get("found"):
+        plan["pre_flight_checks"].append({
+            "check": "current_deployment",
+            "status": "passed" if current_health.get("all_healthy") else "warning",
+            "details": f"Current deployment: {len(current_health.get('containers', []))} containers",
+        })
+        plan["rollback_strategy"].append({
+            "step": 1,
+            "action": "docker rollback",
+            "command": f"docker-compose -p {project_id} up -d --force-recreate",
+        })
+    
+    # Deployment steps
+    step_num = len(plan["steps"]) + 1
+    plan["steps"].extend([
+        {
+            "order": step_num,
+            "action": "pull_images",
+            "description": f"Pull Docker images for version {version or 'latest'}",
+            "command": f"docker-compose -p {project_id} pull",
+        },
+        {
+            "order": step_num + 1,
+            "action": "stop_current",
+            "description": "Stop current deployment gracefully",
+            "command": f"docker-compose -p {project_id} stop",
+        },
+        {
+            "order": step_num + 2,
+            "action": "deploy_new",
+            "description": f"Deploy to {target_realm}",
+            "command": f"docker-compose -p {project_id} up -d",
+        },
+        {
+            "order": step_num + 3,
+            "action": "health_check",
+            "description": "Verify deployment health",
+            "tool": "check_deployment_health",
+        },
+    ])
+    
+    return plan
 
 
 @tool
@@ -339,7 +986,9 @@ async def register_project(
     name: str,
     subdomain: str,
     description: Optional[str] = None,
-    git_repo_url: Optional[str] = None
+    git_repo_url: Optional[str] = None,
+    category: str = "work",
+    realm: str = "alfheim"
 ) -> dict:
     """
     [Skuld] Register a new project in the platform.
@@ -349,16 +998,105 @@ async def register_project(
     Args:
         project_id: Unique identifier (lowercase, alphanumeric with hyphens)
         name: Human-readable name
-        subdomain: The subdomain for routing (e.g., "myproject" -> *.myproject.ravenhelm.test)
+        subdomain: The subdomain for routing (e.g., "myproject" -> myproject.ravenhelm.test)
         description: Optional description
         git_repo_url: Optional Git repository URL
+        category: One of "personal", "work", "shared" (default: "work")
+        realm: The realm (midgard, alfheim, jotunheim) (default: "alfheim")
     """
-    return {
-        "status": "requires_injection",
+    import yaml
+    import re
+    
+    # Validate project_id
+    if not re.match(r'^[a-z0-9][a-z0-9-]*[a-z0-9]$', project_id):
+        return {
+            "error": "Invalid project_id",
+            "hint": "Use lowercase alphanumeric with hyphens, e.g., 'my-project'",
+        }
+    
+    registry = await _load_port_registry()
+    if not registry:
+        return {"error": "Could not load port registry"}
+    
+    # Check if project already exists
+    for cat in ["platform", "personal", "work", "shared"]:
+        if project_id in registry.get(cat, {}):
+            return {
+                "error": "Project already exists",
+                "existing_category": cat,
+                "hint": "Use a different project_id or update the existing project",
+            }
+    
+    # Allocate ports
+    allocation = await allocate_ports.ainvoke({
         "project_id": project_id,
-        "name": name,
-        "subdomain": subdomain
+        "services": [{"name": "api", "type": "http"}, {"name": "ui", "type": "frontend"}],
+        "realm": realm,
+    })
+    
+    if "error" in allocation:
+        return allocation
+    
+    # Get allocated ports
+    api_port = None
+    ui_port = None
+    for alloc in allocation.get("allocations", []):
+        if alloc["type"] == "api":
+            api_port = alloc["port"]
+        elif alloc["type"] == "ui":
+            ui_port = alloc["port"]
+    
+    # Create project entry
+    project_entry = {
+        "path": f"~/Development/{category}/{project_id}",
+        "api_port": api_port,
+        "ui_port": ui_port,
+        "domain": f"{subdomain}.ravenhelm.test",
+        "realm": realm,
+        "status": "registered",
+        "description": description or f"{name} project",
     }
+    
+    if git_repo_url:
+        project_entry["git_remote"] = git_repo_url
+    
+    # Add to registry
+    if category not in registry:
+        registry[category] = {}
+    registry[category][project_id] = project_entry
+    
+    # Update next_available
+    if "next_available" not in registry:
+        registry["next_available"] = {}
+    registry["next_available"].update(allocation.get("proposed_update", {}))
+    
+    # Write back to file
+    registry_path = WORKSPACE_ROOT / "config" / "port_registry.yaml"
+    try:
+        content = yaml.dump(registry, default_flow_style=False, sort_keys=False)
+        await _write_text(registry_path, content)
+        
+        return {
+            "success": True,
+            "project_id": project_id,
+            "domain": project_entry["domain"],
+            "api_port": api_port,
+            "ui_port": ui_port,
+            "category": category,
+            "realm": realm,
+            "next_steps": [
+                f"Create project at {project_entry['path']}",
+                "Add docker-compose.yml",
+                "Run: docker-compose up -d",
+            ],
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"Failed to write registry: {str(e)}",
+            "project_entry": project_entry,
+            "hint": "Project config prepared but not saved",
+        }
 
 
 class TwilioMessageInput(BaseModel):

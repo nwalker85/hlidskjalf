@@ -21,7 +21,7 @@ Host Various    ← Individual service ports (GitLab 11443, etc.)
 ```
 Host Port 443 ← Traefik (single edge proxy)
     ↓
-    ├── gitlab.ravenhelm.test → gitlab_net (10.20.0.0/24) → GitLab
+    ├── gitlab.ravenhelm.test → platform_net (10.10.0.0/24) → GitLab
     ├── saaa.ravenhelm.test → saaa_net (10.30.0.0/24) → SAAA
     ├── grafana.observe.ravenhelm.test → platform_net (10.10.0.0/24) → Grafana
     ├── hlidskjalf.ravenhelm.test → platform_net → Hlidskjalf
@@ -41,8 +41,8 @@ networks:
     subnet: 10.10.0.0/24    # Ravenhelm platform services
                             # (Hlidskjalf, Grafana, Prometheus, Redis, etc.)
   
-  gitlab_net:
-    subnet: 10.20.0.0/24    # GitLab + Runner
+  platform_net:
+    subnet: 10.10.0.0/24    # GitLab + Runner
   
   saaa_net:
     subnet: 10.30.0.0/24    # SAAA/AgentSwarm/AgentCrucible
@@ -65,7 +65,7 @@ cd /Users/nwalker/Development/hlidskjalf
 # Create all networks
 docker network create --driver bridge --subnet 10.0.10.0/24 edge
 docker network create --driver bridge --subnet 10.10.0.0/24 platform_net
-docker network create --driver bridge --subnet 10.20.0.0/24 gitlab_net
+docker network create --driver bridge --subnet 10.10.0.0/24 platform_net
 docker network create --driver bridge --subnet 10.30.0.0/24 saaa_net
 docker network create --driver bridge --subnet 10.40.0.0/24 m2c_net
 docker network create --driver bridge --subnet 10.50.0.0/24 tinycrm_net
@@ -118,7 +118,7 @@ services:
     networks:
       - edge
       - platform_net
-      - gitlab_net
+      - platform_net
       - saaa_net
       - m2c_net
       - tinycrm_net
@@ -136,7 +136,7 @@ networks:
     external: true
   platform_net:
     external: true
-  gitlab_net:
+  platform_net:
     external: true
   saaa_net:
     external: true
@@ -203,7 +203,7 @@ services:
     # ... existing config ...
     networks:
       - platform_net
-      - gitlab-network  # Keep for inter-service communication
+      - platform_net  # Keep for inter-service communication
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -215,7 +215,7 @@ services:
   langfuse:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -227,7 +227,7 @@ services:
   phoenix:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -239,7 +239,7 @@ services:
   redpanda-console:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -251,7 +251,7 @@ services:
   openbao:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -263,7 +263,7 @@ services:
   n8n:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -275,7 +275,7 @@ services:
   hlidskjalf:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -287,7 +287,7 @@ services:
   hlidskjalf-ui:
     networks:
       - platform_net
-      - gitlab-network
+      - platform_net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"
@@ -301,11 +301,11 @@ services:
 networks:
   platform_net:
     external: true
-  gitlab-network:
+  platform_net:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.88.0.0/16
+        - subnet: 10.10.0.0/24
 ```
 
 **3.2 Remove nginx proxy containers**
@@ -337,11 +337,11 @@ services:
   gitlab:
     # ... existing config ...
     networks:
-      - gitlab_net
-      - gitlab-network
+      - platform_net
+      - platform_net
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=gitlab_net"
+      - "traefik.docker.network=platform_net"
       - "traefik.http.routers.gitlab.rule=Host(`gitlab.ravenhelm.test`)"
       - "traefik.http.routers.gitlab.entrypoints=websecure"
       - "traefik.http.routers.gitlab.tls=true"
@@ -354,9 +354,9 @@ services:
       - "traefik.http.services.registry.loadbalancer.server.port=5050"
 
 networks:
-  gitlab_net:
+  platform_net:
     external: true
-  gitlab-network:
+  platform_net:
     driver: bridge
 ```
 
@@ -454,7 +454,7 @@ After migration:
 networks=(
   "edge:10.0.10.0/24"
   "platform_net:10.10.0.0/24"
-  "gitlab_net:10.20.0.0/24"
+  "platform_net:10.10.0.0/24"
   "saaa_net:10.30.0.0/24"
   "m2c_net:10.40.0.0/24"
   "tinycrm_net:10.50.0.0/24"

@@ -4,11 +4,11 @@ Helper utilities for generating TODO plans for the Norns deep agent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, List, Optional, Union
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from src.core.config import get_settings
 
@@ -80,6 +80,37 @@ def _normalize_todos(raw: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+async def _get_planning_llm():
+    """Get LLM configured for planning from database config"""
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from src.models.llm_config import InteractionType
+    from src.services.llm_config import LLMConfigService
+    
+    settings = get_settings()
+    
+    try:
+        engine = create_async_engine(str(settings.DATABASE_URL), echo=False)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        
+        async with async_session() as session:
+            config_service = LLMConfigService(session)
+            llm = await config_service.get_llm_for_interaction(InteractionType.PLANNING)
+            return llm
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to load planning LLM from config, using fallback: {e}")
+        
+        # Fallback
+        from langchain_openai import ChatOpenAI
+        import os
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("No LLM configuration available and OPENAI_API_KEY not set")
+        return ChatOpenAI(model="gpt-4o", temperature=0.2)
+
+
 def generate_todo_plan(goal: Union[str, list, Any], context: Optional[str] = None) -> list[dict]:
     """
     Ask the model to decompose a user goal into TODO items.
@@ -94,8 +125,23 @@ def generate_todo_plan(goal: Union[str, list, Any], context: Optional[str] = Non
     goal_text = _extract_text(goal)
     context_text = _extract_text(context) if context else ""
     
-    settings = get_settings()
-    llm = ChatOpenAI(model=settings.NORNS_MODEL, temperature=0.2)
+    # Get LLM from config
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                llm = loop.run_until_complete(_get_planning_llm())
+            finally:
+                loop.close()
+        else:
+            llm = loop.run_until_complete(_get_planning_llm())
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to get planning LLM: {e}")
+        raise
+    
     prompt_context = (
         f"Context:\n{context_text.strip()}\n\n" if context_text and context_text.strip() else ""
     )

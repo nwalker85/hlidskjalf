@@ -60,10 +60,17 @@ services:
       
       # Redis for state
       - REDIS_URL=redis://gitlab-sre-redis:6379/3
+      # GitLab work queue + secrets
+      - GITLAB_BASE_URL=http://gitlab-sre-gitlab
+      - GITLAB_PROJECT_ID=2
+      - GITLAB_PAT_SECRET_NAME=ravenhelm/dev/gitlab/mcp_service
+      - GITLAB_WEBHOOK_SECRET_NAME=ravenhelm/dev/gitlab/webhook/norns
+      - AWS_ENDPOINT_URL=http://gitlab-sre-localstack:4566
+      - AWS_REGION=us-east-1
     ports:
       - "8050:8050"
     networks:
-      - gitlab-network
+      - platform_net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8050/health"]
       interval: 30s
@@ -72,7 +79,7 @@ services:
     restart: unless-stopped
 
 networks:
-  gitlab-network:
+  platform_net:
     external: true
-    name: hlidskjalf_gitlab-network
+    name: platform_net
 

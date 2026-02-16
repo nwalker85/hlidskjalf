@@ -13,6 +13,23 @@ from src.models.registry import (
     NginxRouteRecord,
 )
 
+from src.models.llm_config import (
+    LLMProvider,
+    LLMProviderModel,
+    LLMGlobalConfig,
+    LLMUserConfig,
+    ProviderType,
+    InteractionType,
+    ProviderCreate,
+    ProviderUpdate,
+    ProviderResponse,
+    ModelCreate,
+    ModelResponse,
+    InteractionConfigUpdate,
+    InteractionConfigResponse,
+    GlobalConfigResponse,
+)
+
 __all__ = [
     "Base",
     "Realm",
@@ -25,5 +42,20 @@ __all__ = [
     "Deployment",
     "HealthCheckRecord",
     "NginxRouteRecord",
+    # LLM Configuration
+    "LLMProvider",
+    "LLMProviderModel",
+    "LLMGlobalConfig",
+    "LLMUserConfig",
+    "ProviderType",
+    "InteractionType",
+    "ProviderCreate",
+    "ProviderUpdate",
+    "ProviderResponse",
+    "ModelCreate",
+    "ModelResponse",
+    "InteractionConfigUpdate",
+    "InteractionConfigResponse",
+    "GlobalConfigResponse",
 ]
 

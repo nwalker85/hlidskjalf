@@ -5,6 +5,7 @@ Ravenhelm Control Plane API Routes
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from typing import Optional
 
 from src.core.config import get_settings
@@ -159,15 +160,31 @@ async def create_project(
     
     session.add(record)
     await session.commit()
-    await session.refresh(record)
+    
+    # Reload with relationships
+    result = await session.execute(
+        select(ProjectRecord)
+        .options(selectinload(ProjectRecord.ports))
+        .where(ProjectRecord.id == project.id)
+    )
+    record = result.scalar_one()
     
     return ProjectResponse.model_validate(record)
 
 
 @router.get("/projects", response_model=list[ProjectResponse], tags=["Projects"])
-async def list_projects(session: AsyncSession = Depends(get_session)):
-    """List all registered projects"""
-    result = await session.execute(select(ProjectRecord))
+async def list_projects(
+    realm: Optional[str] = None,
+    session: AsyncSession = Depends(get_session)
+):
+    """List all registered projects with optional realm filtering"""
+    query = select(ProjectRecord).options(selectinload(ProjectRecord.ports))
+    
+    if realm:
+        # Filter by realm through deployments
+        query = query.join(Deployment).where(Deployment.environment == realm)
+    
+    result = await session.execute(query)
     projects = result.scalars().all()
     return [ProjectResponse.model_validate(p) for p in projects]
 
@@ -179,7 +196,9 @@ async def get_project(
 ):
     """Get project details"""
     result = await session.execute(
-        select(ProjectRecord).where(ProjectRecord.id == project_id)
+        select(ProjectRecord)
+        .options(selectinload(ProjectRecord.ports))
+        .where(ProjectRecord.id == project_id)
     )
     project = result.scalar_one_or_none()
     
@@ -381,6 +400,145 @@ async def discover_docker_deployments(session: AsyncSession = Depends(get_sessio
     """Discover running Docker containers with ravenhelm labels"""
     manager = DeploymentManager(session)
     return await manager.discover_docker_deployments()
+
+
+# =============================================================================
+# Health Status Endpoints
+# =============================================================================
+
+@router.get("/health/summary", tags=["Health"])
+async def get_health_summary(session: AsyncSession = Depends(get_session)):
+    """Get aggregated health status across all deployments"""
+    
+    # Count by health status
+    health_counts = {}
+    for status in HealthStatus:
+        result = await session.execute(
+            select(func.count(Deployment.id)).where(
+                Deployment.health_status == status
+            )
+        )
+        health_counts[status.value] = result.scalar()
+    
+    # Get health status by realm
+    realm_health = {}
+    for realm in Realm:
+        result = await session.execute(
+            select(
+                Deployment.health_status,
+                func.count(Deployment.id)
+            ).where(
+                Deployment.environment == realm
+            ).group_by(Deployment.health_status)
+        )
+        realm_health[realm.value] = {
+            row[0].value: row[1] for row in result
+        }
+    
+    # Get recent failures
+    result = await session.execute(
+        select(Deployment)
+        .where(Deployment.health_status == HealthStatus.UNHEALTHY)
+        .order_by(Deployment.last_health_check.desc())
+        .limit(10)
+    )
+    recent_failures = result.scalars().all()
+    
+    # Calculate uptime percentage (healthy / total)
+    total = sum(health_counts.values())
+    healthy = health_counts.get(HealthStatus.HEALTHY.value, 0)
+    uptime_percentage = (healthy / total * 100) if total > 0 else 100.0
+    
+    return {
+        "health_counts": health_counts,
+        "realm_health": realm_health,
+        "uptime_percentage": uptime_percentage,
+        "recent_failures": [
+            {
+                "deployment_id": d.id,
+                "project_id": d.project_id,
+                "environment": d.environment.value,
+                "last_check": d.last_health_check.isoformat() if d.last_health_check else None
+            }
+            for d in recent_failures
+        ]
+    }
+
+
+@router.get("/projects/{project_id}/health", tags=["Health"])
+async def get_project_health(
+    project_id: str,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get detailed health status for a specific project across all environments"""
+    
+    # Verify project exists
+    result = await session.execute(
+        select(ProjectRecord).where(ProjectRecord.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    
+    # Get all deployments for this project
+    result = await session.execute(
+        select(Deployment)
+        .where(Deployment.project_id == project_id)
+        .order_by(Deployment.environment)
+    )
+    deployments = result.scalars().all()
+    
+    # Get recent health checks for each deployment
+    deployment_health = []
+    for deployment in deployments:
+        # Get last 5 health checks
+        result = await session.execute(
+            select(HealthCheckRecord)
+            .where(HealthCheckRecord.deployment_id == deployment.id)
+            .order_by(HealthCheckRecord.checked_at.desc())
+            .limit(5)
+        )
+        recent_checks = result.scalars().all()
+        
+        deployment_health.append({
+            "deployment_id": deployment.id,
+            "environment": deployment.environment.value,
+            "status": deployment.status.value,
+            "health_status": deployment.health_status.value,
+            "last_health_check": deployment.last_health_check.isoformat() if deployment.last_health_check else None,
+            "recent_checks": [
+                {
+                    "status": hc.status.value,
+                    "response_time_ms": hc.response_time_ms,
+                    "checked_at": hc.checked_at.isoformat()
+                }
+                for hc in recent_checks
+            ]
+        })
+    
+    return {
+        "project_id": project_id,
+        "project_name": project.name,
+        "deployments": deployment_health,
+        "overall_health": _calculate_overall_health(deployments)
+    }
+
+
+def _calculate_overall_health(deployments: list[Deployment]) -> str:
+    """Calculate overall health status from list of deployments"""
+    if not deployments:
+        return HealthStatus.UNKNOWN.value
+    
+    statuses = [d.health_status for d in deployments]
+    
+    if all(s == HealthStatus.HEALTHY for s in statuses):
+        return HealthStatus.HEALTHY.value
+    elif any(s == HealthStatus.UNHEALTHY for s in statuses):
+        return HealthStatus.UNHEALTHY.value
+    elif any(s == HealthStatus.DEGRADED for s in statuses):
+        return HealthStatus.DEGRADED.value
+    else:
+        return HealthStatus.UNKNOWN.value
 
 
 # =============================================================================

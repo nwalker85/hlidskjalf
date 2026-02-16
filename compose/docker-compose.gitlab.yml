@@ -1,0 +1,147 @@
+# Ravenhelm Platform - GitLab Stack
+# =====================================
+# Source control + CI/CD
+#
+# Services: gitlab, gitlab-runner
+# Dependencies: postgres (internal), zitadel (SSO)
+#
+# Start: docker compose -f compose/docker-compose.gitlab.yml up -d
+
+include:
+  - docker-compose.base.yml
+
+services:
+  # =========================================================================
+  # GITLAB CE - Source Control & CI/CD
+  # =========================================================================
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab-sre-gitlab
+    labels:
+      - "ravenhelm.project=hlidskjalf-gitlab"
+      - "ravenhelm.service=gitlab"
+      - "ravenhelm.workload=source-control"
+    hostname: gitlab.ravenhelm.test
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+      - "norns.ravenhelm.test:host-gateway"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /etc/gitlab/trusted-certs &&
+        cp /certs/ravenhelm-ca.crt /etc/gitlab/trusted-certs/ravenhelm-ca.crt 2>/dev/null || true &&
+        cp /certs/mkcert-ca.crt /etc/gitlab/trusted-certs/mkcert-ca.crt 2>/dev/null || true &&
+        exec /assets/init-container
+    environment:
+      GITLAB_OIDC_CLIENT_ID: ${GITLAB_OIDC_CLIENT_ID}
+      GITLAB_OIDC_CLIENT_SECRET: ${GITLAB_OIDC_CLIENT_SECRET}
+      GITLAB_OMNIBUS_CONFIG: |
+        # External URL (accessed via ravenhelm-proxy)
+        external_url 'https://gitlab.ravenhelm.test'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+
+        # Registry
+        registry_external_url 'https://registry.gitlab.ravenhelm.test'
+        gitlab_rails['registry_enabled'] = true
+        registry['enable'] = true
+        registry_nginx['listen_port'] = 5050
+        registry_nginx['listen_https'] = false
+
+        # Performance tuning for local dev
+        puma['worker_processes'] = 2
+        sidekiq['concurrency'] = 10
+        postgresql['shared_buffers'] = "256MB"
+        prometheus_monitoring['enable'] = false
+
+        # Disable unnecessary services for local dev
+        alertmanager['enable'] = false
+
+        # SSH (optional - direct port)
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+        # Time zone
+        gitlab_rails['time_zone'] = 'America/New_York'
+
+        # Allow hooks to talk to local network (Traefik/Bifrost)
+        gitlab_rails['allow_requests_to_local_network_from_system_hooks'] = true
+        gitlab_rails['allow_requests_to_local_network_from_web_hooks_and_services'] = true
+        gitlab_rails['allow_local_requests_from_system_hooks'] = true
+        gitlab_rails['allow_local_requests_from_web_hooks_and_services'] = true
+        gitlab_rails['outbound_local_requests_allowlist'] = ['norns.ravenhelm.test']
+        gitlab_rails['webhook_allowed_ips'] = ['192.168.65.254']
+
+        # Zitadel SSO (OpenID Connect)
+        gitlab_rails['omniauth_enabled'] = true
+        gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
+        gitlab_rails['omniauth_block_auto_created_users'] = false
+        gitlab_rails['omniauth_auto_link_user'] = ['openid_connect']
+        gitlab_rails['omniauth_providers'] = [
+          {
+            name: "openid_connect",
+            label: "Zitadel",
+            icon: nil,
+            args: {
+              name: "openid_connect",
+              scope: ["openid", "profile", "email", "urn:zitadel:iam:org:project:roles"],
+              response_type: "code",
+              issuer: "https://zitadel.ravenhelm.test",
+              discovery: true,
+              client_auth_method: "basic",
+              uid_field: "sub",
+              pkce: true,
+              client_options: {
+                identifier: ENV["GITLAB_OIDC_CLIENT_ID"],
+                secret: ENV["GITLAB_OIDC_CLIENT_SECRET"],
+                redirect_uri: "https://gitlab.ravenhelm.test/users/auth/openid_connect/callback"
+              }
+            }
+          }
+        ]
+        
+        # Admin users (first user with admin role in Zitadel gets admin)
+        gitlab_rails['omniauth_auto_sign_in_with_provider'] = nil
+        gitlab_rails['omniauth_sync_email_from_provider'] = 'openid_connect'
+        gitlab_rails['omniauth_sync_profile_from_provider'] = ['openid_connect']
+        gitlab_rails['omniauth_sync_profile_attributes'] = ['email', 'name']
+    ports:
+      - "2222:22"  # SSH for git operations
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+      # Mount CA certificates for Zitadel OIDC verification
+      - ../ravenhelm-proxy/config/certs/ca.crt:/certs/ravenhelm-ca.crt:ro
+      - ../ravenhelm-proxy/config/certs/mkcert-ca.crt:/certs/mkcert-ca.crt:ro
+    shm_size: '256m'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # GitLab takes a while to start
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # GITLAB RUNNER - CI/CD Executor
+  # =========================================================================
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    container_name: gitlab-sre-runner
+    labels:
+      - "ravenhelm.project=hlidskjalf-gitlab"
+      - "ravenhelm.service=runner"
+      - "ravenhelm.workload=ci-cd"
+    volumes:
+      - gitlab_runner_config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      gitlab:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
+

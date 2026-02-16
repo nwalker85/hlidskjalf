@@ -461,7 +461,7 @@ async def spawn_subagent_type(
         "tools": tool_names or ["agent_status"],
         "container": {
             "image": f"ravenhelm/{name}:latest",
-            "network": "gitlab-network",
+            "network": "platform_net",
             "restart_policy": "unless-stopped",
         },
         "created_at": datetime.now().isoformat(),
@@ -512,7 +512,7 @@ async def spawn_subagent_type(
             returncode, stdout, stderr = await _run_command([
                 "docker", "run", "-d",
                 "--name", f"ravenhelm-{name}",
-                "--network", "gitlab-network",
+                "--network", "platform_net",
                 "-p", f"{port}:{port}",
                 "-e", f"OPENAI_API_KEY={os.environ.get('OPENAI_API_KEY', '')}",
                 "-e", f"ANTHROPIC_API_KEY={os.environ.get('ANTHROPIC_API_KEY', '')}",

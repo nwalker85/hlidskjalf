@@ -11,7 +11,9 @@ from typing import Optional
 import asyncio
 import json
 
+from src.core.config import get_settings
 from src.norns.deep_agent import create_norns_deep_agent, get_subagent_catalog
+from src.norns.squad_schema import Topics
 
 router = APIRouter(prefix="/api/v1/norns", tags=["norns"])
 
@@ -162,14 +164,15 @@ async def stream_agent_logs():
         try:
             # Import Kafka consumer
             from aiokafka import AIOKafkaConsumer
-            from src.norns.squad_schema import Topics
             
             # Subscribe to all coordination topics
+            kafka_bootstrap = get_settings().KAFKA_BOOTSTRAP
             consumer = AIOKafkaConsumer(
                 Topics.SQUAD_COORDINATION,
                 Topics.TASK_STATUS,
                 Topics.HEALTH_STATUS,
-                bootstrap_servers="redpanda:9092",  # Docker service name
+                Topics.LLM_CONFIG,
+                bootstrap_servers=kafka_bootstrap,
                 group_id="observability-stream",
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 auto_offset_reset='latest'
@@ -181,16 +184,24 @@ async def stream_agent_logs():
             
             try:
                 async for msg in consumer:
-                    event = msg.value
+                    event = msg.value or {}
+                    
+                    if msg.topic == Topics.LLM_CONFIG:
+                        llm_entry = {
+                            "type": "llm.config.changed",
+                            **event,
+                        }
+                        yield f"data: {json.dumps(llm_entry)}\n\n"
+                        continue
                     
                     # Format for frontend
                     log_entry = {
-                        'type': 'event',
-                        'event_type': event.get('event_type'),
-                        'source': event.get('source_agent'),
-                        'target': event.get('target_agent'),
-                        'timestamp': event.get('timestamp'),
-                        'payload': event.get('payload', {})
+                        "type": "event",
+                        "event_type": event.get("event_type"),
+                        "source": event.get("source_agent"),
+                        "target": event.get("target_agent"),
+                        "timestamp": event.get("timestamp"),
+                        "payload": event.get("payload", {}),
                     }
                     
                     yield f"data: {json.dumps(log_entry)}\n\n"

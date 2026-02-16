@@ -42,9 +42,71 @@ http:
         accessControlAllowOriginList:
           - "*"
         accessControlAllowMethods:
-          - "*"
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+          - PATCH
         accessControlAllowHeaders:
           - "*"
+        accessControlMaxAge: 86400
+        addVaryHeader: true
+
+    # Specific CORS for OTEL endpoints (telemetry from browsers)
+    cors-otel:
+      headers:
+        accessControlAllowOriginList:
+          - "*"
+        accessControlAllowMethods:
+          - POST
+          - OPTIONS
+        accessControlAllowHeaders:
+          - Content-Type
+          - traceparent
+          - tracestate
+          - baggage
+        accessControlMaxAge: 86400
+        addVaryHeader: true
+    
+    cors-ravenhelm:
+      headers:
+        accessControlAllowOriginList:
+          - "https://hlidskjalf.ravenhelm.test"
+          - "https://hlidskjalf.ravenhelm.dev"
+          - "https://hlidskjalf.ravenhelm.ai"
+          - "https://control.ravenhelm.test"
+          - "https://control.ravenhelm.dev"
+          - "https://control.ravenhelm.ai"
+          - "https://norns.ravenhelm.test"
+          - "https://norns.ravenhelm.dev"
+          - "https://grafana.ravenhelm.test"
+          - "https://grafana.ravenhelm.dev"
+        accessControlAllowMethods:
+          - GET
+          - OPTIONS
+          - PUT
+          - POST
+          - DELETE
+          - PATCH
+        accessControlAllowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - Origin
+          - X-Requested-With
+          - X-Auth-Request-User
+          - X-Auth-Request-Email
+          - X-Auth-Request-Access-Token
+          # OpenTelemetry distributed tracing headers
+          - traceparent
+          - tracestate
+          - baggage
+        accessControlExposeHeaders:
+          - X-Auth-Request-User
+          - X-Auth-Request-Email
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 86400
 
     # ==========================================================================
     # ZERO-TRUST: Forward Auth via OAuth2-Proxy
@@ -63,12 +125,70 @@ http:
           - "X-Auth-Request-Access-Token"
           - "Authorization"
 
-    # Chain: secure headers + zero-trust auth
+    # Chain: CORS + secure headers + zero-trust auth
     protected:
       chain:
         middlewares:
+          - cors-ravenhelm
           - secure-headers
           - zero-trust-auth
+
+    # ==========================================================================
+    # ZERO-TRUST AUTH FOR .dev DOMAIN (Staging Environment)
+    # ==========================================================================
+    zero-trust-auth-staging:
+      forwardAuth:
+        address: "http://host.docker.internal:4181/oauth2/auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-Auth-Request-User"
+          - "X-Auth-Request-Email"
+          - "X-Auth-Request-Groups"
+          - "X-Auth-Request-Access-Token"
+          - "Authorization"
+
+    # Chain: secure headers + zero-trust auth for staging (.dev)
+    # Chain: CORS + secure headers + zero-trust auth for staging
+    protected-staging:
+      chain:
+        middlewares:
+          - cors-ravenhelm
+          - secure-headers
+          - zero-trust-auth-staging
+
+    # ==========================================================================
+    # EXTERNAL MODEL SERVER AUTH
+    # ==========================================================================
+    model-server-auth:
+      basicAuth:
+        users:
+          # Username: ravenhelm
+          # Password: See .model-server-credentials
+          - "ravenhelm:$2y$05$hiGFf1rrFpDUgOSpI8ospeUwyI9fnAimSb1I/8mt9gWvCXeTeFohq"
+    
+    # Chain: secure headers + basic auth for model server
+    model-server-protected:
+      chain:
+        middlewares:
+          - secure-headers
+          - model-server-auth
+
+  serversTransports:
+    mcp-gitlab-transport:
+      rootCAs:
+        - /certs/spire-bundle.pem
+      certificates:
+        - certFile: /run/spire/certs/svid.pem
+          keyFile: /run/spire/certs/key.pem
+    
+    # External Model Server with mTLS
+    model-server-transport:
+      rootCAs:
+        - /certs/spire-bundle.pem
+      certificates:
+        - certFile: /run/spire/certs/svid.pem
+          keyFile: /run/spire/certs/key.pem
+      insecureSkipVerify: false  # Enforce cert validation
 
   # ==========================================================================
   # ROUTERS
@@ -78,13 +198,23 @@ http:
     # AUTHENTICATION (Must be PUBLIC - no forward auth)
     # ─────────────────────────────────────────────────────────────────────────
     
-    # OAuth2-Proxy Auth Endpoints
+    # OAuth2-Proxy Auth Endpoints (.test internal)
     oauth2-proxy:
       rule: "Host(`auth.ravenhelm.test`)"
       service: oauth2-proxy-svc
       middlewares:
         - secure-headers
       tls: {}
+      priority: 1000
+
+    # OAuth2-Proxy Auth Endpoints (.dev staging)
+    oauth2-proxy-staging:
+      rule: "Host(`auth.ravenhelm.dev`)"
+      service: oauth2-proxy-staging-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
       priority: 1000
 
     # Traefik Dashboard (protected)
@@ -96,9 +226,32 @@ http:
       tls: {}
 
     # ─────────────────────────────────────────────────────────────────────────
+    # EXTERNAL SERVICES
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    # External Model Server (ravenhelm.dev:6701) with mTLS
+    model-server:
+      rule: "Host(`models.ravenhelm.dev`)"
+      service: model-server-svc
+      middlewares:
+        - secure-headers
+        # Note: mTLS auth via SPIRE client cert, not basic auth
+      tls:
+        certResolver: letsencrypt
+      priority: 1000
+
+    # ─────────────────────────────────────────────────────────────────────────
     # HLIÐSKJÁLF — Platform Services
     # ─────────────────────────────────────────────────────────────────────────
     
+    norns-workqueue:
+      rule: "Host(`norns.ravenhelm.test`) && PathPrefix(`/api/work-items`)"
+      service: norns-workqueue-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+      priority: 1500
+
     # Norns LangGraph API (CORS for UI, auth handled by calling app)
     # Note: The UI passes the user's token; API validates it directly
     norns:
@@ -109,7 +262,7 @@ http:
         - secure-headers
       tls: {}
 
-    # Hlidskjalf UI (has native NextAuth/Zitadel SSO)
+    # Hlidskjalf UI (has native NextAuth/Zitadel SSO) - .test internal
     hlidskjalf-ui:
       rule: "Host(`hlidskjalf.ravenhelm.test`)"
       service: hlidskjalf-ui-svc
@@ -117,13 +270,36 @@ http:
         - secure-headers
       tls: {}
 
-    # Hlidskjalf API (protected via forward auth)
+    # Hlidskjalf UI - .dev staging
+    hlidskjalf-ui-staging:
+      rule: "Host(`hlidskjalf.ravenhelm.dev`)"
+      service: hlidskjalf-ui-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
+
+    # Hlidskjalf API - .test internal
+    # Note: UI handles Zitadel SSO natively via NextAuth; API trusts UI-authenticated requests
+    # CORS ensures only ravenhelm origins can call the API
     hlidskjalf-api:
       rule: "Host(`hlidskjalf-api.ravenhelm.test`)"
       service: hlidskjalf-api-svc
       middlewares:
-        - protected
+        - cors-ravenhelm
+        - secure-headers
       tls: {}
+
+    # Hlidskjalf API - .dev staging
+    # Note: UI handles Zitadel SSO natively via NextAuth; API trusts UI-authenticated requests
+    hlidskjalf-api-staging:
+      rule: "Host(`hlidskjalf-api.ravenhelm.dev`)"
+      service: hlidskjalf-api-svc
+      middlewares:
+        - cors-ravenhelm
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
 
     # Ollama Local LLM (internal service, CORS for UI tools)
     ollama:
@@ -138,13 +314,22 @@ http:
     # OBSERVABILITY
     # ─────────────────────────────────────────────────────────────────────────
     
-    # Grafana (has native Zitadel SSO)
+    # Grafana (has native Zitadel SSO) - .test internal
     grafana:
       rule: "Host(`grafana.observe.ravenhelm.test`) || Host(`observe.ravenhelm.test`) || Host(`grafana.ravenhelm.test`)"
       service: grafana-svc
       middlewares:
         - secure-headers
       tls: {}
+
+    # Grafana - .dev staging
+    grafana-staging:
+      rule: "Host(`grafana.ravenhelm.dev`)"
+      service: grafana-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
 
     # Protected internal services (no native SSO)
     prometheus:
@@ -194,13 +379,23 @@ http:
         - protected
       tls: {}
 
-    # Identity Provider (PUBLIC - this IS the auth provider)
+    # Identity Provider (PUBLIC - this IS the auth provider) - .test internal
     zitadel:
       rule: "Host(`zitadel.ravenhelm.test`)"
       service: zitadel-svc
       middlewares:
         - secure-headers
       tls: {}
+      priority: 1000
+
+    # Identity Provider - .dev staging
+    zitadel-staging:
+      rule: "Host(`zitadel.ravenhelm.dev`)"
+      service: zitadel-svc
+      middlewares:
+        - secure-headers
+      tls:
+        certResolver: letsencrypt
       priority: 1000
 
     localstack:
@@ -269,12 +464,24 @@ http:
       tls: {}
 
     # OTLP receiver (via Alloy) - API endpoint, no UI auth needed
+    # CORS is required because browsers send telemetry with tracing headers
+    # Note: No secure-headers middleware - OTEL endpoints handle their own security
     otel:
       rule: "Host(`otel.ravenhelm.test`) || Host(`otel.observe.ravenhelm.test`)"
       service: otel-svc
       middlewares:
-        - secure-headers
+        - cors-otel
       tls: {}
+    
+    # OTLP receiver (staging) - for .dev domain
+    # CORS is required because browsers send telemetry with tracing headers
+    otel-staging:
+      rule: "Host(`otel.ravenhelm.dev`)"
+      service: otel-svc
+      middlewares:
+        - cors-otel
+      tls:
+        certResolver: letsencrypt
 
     # ─────────────────────────────────────────────────────────────────────────
     # REALTIME
@@ -283,6 +490,14 @@ http:
     livekit:
       rule: "Host(`livekit.ravenhelm.test`)"
       service: livekit-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # MCP GitLab server
+    mcp-gitlab:
+      rule: "Host(`mcp.gitlab.ravenhelm.test`)"
+      service: mcp-gitlab-svc
       middlewares:
         - protected
       tls: {}
@@ -337,21 +552,139 @@ http:
         - protected
       tls: {}
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # WORK PROJECTS (Quant/)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # M2C Demo - Grid/Utility Compliance Monitoring
+    m2c-ui:
+      rule: "Host(`m2c.ravenhelm.test`)"
+      service: m2c-ui-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    m2c-api:
+      rule: "Host(`m2c-api.ravenhelm.test`)"
+      service: m2c-api-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    m2c-n8n:
+      rule: "Host(`m2c-n8n.ravenhelm.test`)"
+      service: m2c-n8n-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    m2c-redpanda:
+      rule: "Host(`m2c-redpanda.ravenhelm.test`)"
+      service: m2c-redpanda-console-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-frontend:
+      rule: "Host(`saaa.ravenhelm.test`) || Host(`frontend.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    saaa-api:
+      rule: "Host(`api.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    saaa-agents:
+      rule: "Host(`agents.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-kafka:
+      rule: "Host(`kafka.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-infra:
+      rule: "Host(`infra.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-core:
+      rule: "Host(`core.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    saaa-capability:
+      rule: "Host(`capability.saaa.ravenhelm.test`)"
+      service: saaa-nginx-svc
+      middlewares:
+        - protected
+      tls: {}
+
+    # SIP Voice Platform
+    sip-ui:
+      rule: "Host(`sip.ravenhelm.test`)"
+      service: sip-ui-svc
+      middlewares:
+        - secure-headers
+      tls: {}
+
+    sip-api:
+      rule: "Host(`sip-api.ravenhelm.test`)"
+      service: sip-api-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
+    sip-langgraph:
+      rule: "Host(`sip-langgraph.ravenhelm.test`)"
+      service: sip-langgraph-svc
+      middlewares:
+        - cors-all
+        - secure-headers
+      tls: {}
+
   # ==========================================================================
   # SERVICES (host.docker.internal points to host machine)
   # ==========================================================================
   services:
-    # Zero-Trust Auth
+    # Zero-Trust Auth (.test internal)
     oauth2-proxy-svc:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:4180"
+
+    # Zero-Trust Auth (.dev staging)
+    oauth2-proxy-staging-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:4181"
 
     # Platform
     norns-svc:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:2024"
+    norns-workqueue-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8050"
     
     hlidskjalf-ui-svc:
       loadBalancer:
@@ -361,7 +694,7 @@ http:
     hlidskjalf-api-svc:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:8000"
+          - url: "http://host.docker.internal:8900"
 
     ollama-svc:
       loadBalancer:
@@ -496,3 +829,55 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:7475"
+
+    mcp-gitlab-svc:
+      loadBalancer:
+        serversTransport: mcp-gitlab-transport
+        servers:
+          - url: "https://host.docker.internal:9400"
+
+    # Work Projects (M2C Demo)
+    m2c-ui-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-visualizer:3000"
+    
+    m2c-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-backend:4000"
+    
+    m2c-n8n-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-n8n:5678"
+    
+    m2c-redpanda-console-svc:
+      loadBalancer:
+        servers:
+          - url: "http://m2c-redpanda-console:8080"
+    saaa-nginx-svc:
+      loadBalancer:
+        servers:
+          - url: "http://saaa-nginx:8080"
+    sip-ui-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3207"
+
+    sip-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8207"
+
+    sip-langgraph-svc:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8208"
+
+    # External Model Server with mTLS
+    model-server-svc:
+      loadBalancer:
+        serversTransport: model-server-transport
+        servers:
+          - url: "https://192.168.50.26:6702"  # HTTPS + mTLS via SPIRE (Nginx proxy)

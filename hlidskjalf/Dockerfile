@@ -27,11 +27,14 @@ RUN pip install --no-cache-dir pip --upgrade && \
 # Copy application code
 COPY src/ ./src/
 
-# Create non-root user
-RUN useradd -m -u 1000 odin && \
-    chown -R odin:odin /app
+# Create ravenhelm user (UID/GID 1001) with docker group access
+# GID 0 (root group) is needed for Docker socket access on macOS Docker Desktop
+RUN groupadd -g 1001 ravenhelm && \
+    groupadd -g 999 docker && \
+    useradd -m -u 1001 -g ravenhelm -G docker,root ravenhelm && \
+    chown -R ravenhelm:ravenhelm /app
 
-USER odin
+USER ravenhelm
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

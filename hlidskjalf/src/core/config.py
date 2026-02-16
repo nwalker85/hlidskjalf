@@ -128,10 +128,9 @@ class Settings(BaseSettings):
     UNHEALTHY_THRESHOLD: int = Field(default=3)
     
     # ==========================================================================
-    # Observability
-    # Uses Docker service name 'otel-collector' when in container
+    # Observability (Grafana Alloy endpoint)
     # ==========================================================================
-    OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(default="http://otel-collector:4317")
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(default="http://alloy:4317")
     OTEL_SERVICE_NAME: str = Field(default="ravenhelm-control")
     PROMETHEUS_METRICS_PATH: str = Field(default="/metrics")
     
@@ -176,6 +175,10 @@ class Settings(BaseSettings):
         default="mistral:latest",
         description="Model for specialized agents (7B, faster)"
     )
+    LLM_PROVIDER_REFRESH_SECONDS: int = Field(
+        default=60,
+        description="How often to poll providers for installed models",
+    )
     
     # ==========================================================================
     # HuggingFace TGI - Alternative local LLM provider
@@ -197,6 +200,12 @@ class Settings(BaseSettings):
         description="LLM provider: 'ollama', 'lmstudio', 'huggingface', 'openai'"
     )
     
+    # Eventing
+    KAFKA_BOOTSTRAP: str = Field(
+        default="redpanda:9092",
+        description="Bootstrap servers for Redpanda/Kafka"
+    )
+    
     # ==========================================================================
     # LM Studio - Local model server with OpenAI-compatible API
     # ==========================================================================
@@ -207,6 +216,10 @@ class Settings(BaseSettings):
     LMSTUDIO_MODEL: str = Field(
         default="ministral-3-14b-reasoning",
         description="Model loaded in LM Studio"
+    )
+    LMSTUDIO_API_KEY: str = Field(
+        default="lm-studio",
+        description="API key for LM Studio (use 'username:password' format for BasicAuth)"
     )
     
     # LangFuse for tracing the Norns' thoughts

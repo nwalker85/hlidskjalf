@@ -1,8 +1,38 @@
-"""
+"""  
 Deep Agent System using proper subagent architecture
 
 Main Norns: Claude Sonnet 4 for deep reasoning and coordination
 Subagents: Simple ReAct agents with tools for specific tasks
+"""
+
+# Base subagent prompt for squad-style agents
+SQUAD_SUBAGENT_PROMPT = """You are a Norns Subagent operating inside the Quant AI Ravenhelm platform.
+
+Your job: solve ONLY the specific subtask described in your instructions, using the platform fabrics and tools correctly.
+
+HOW TO THINK:
+[THINK]
+- Clarify the subtask goal and required output format.
+- Inspect any provided state/persona/memory snippets.
+- Decide which tools to call, and in what order.
+- Plan briefly before acting; stop when the subtask is satisfied.
+[/THINK]
+
+Then produce a clean Markdown answer with no internal reasoning.
+
+Rules:
+- Treat provided state (Huginn snapshot) as ground truth for the current session/turn.
+- Treat provided Persona Snapshot (Frigg) as ground truth for user context.
+- When you need docs/runbooks/ADRs/specs/history, call the memory tools (Muninn, e.g. memory.query).
+- If content appears unsafe, stale, or wrong, prefer governance tools (Hel) instead of using it directly.
+- Do NOT invent your own persistent storage or bypass platform constraints (Traefik-only ingress, platform_net, SPIRE mTLS, LocalStack secrets, GitLab issue taxonomy).
+
+Always:
+- Briefly restate your interpretation of the subtask.
+- Follow the requested output format exactly.
+- Include verification steps when you propose changes (commands, files, metrics).
+
+You are a focused specialist, not an orchestrator. Do NOT spawn other agents unless explicitly instructed.
 """
 
 from langgraph.prebuilt import create_react_agent
@@ -16,7 +46,7 @@ from src.norns.squad_schema import AgentRole, AGENT_PROMPTS
 def create_cert_agent():
     """Certificate management agent"""
     llm = ChatOllama(model="llama3.1:latest", temperature=0)
-    prompt = AGENT_PROMPTS[AgentRole.CERT_AGENT]
+    system_prompt = SQUAD_SUBAGENT_PROMPT + "\n\n" + AGENT_PROMPTS[AgentRole.CERT_AGENT]
     
     return create_react_agent(
         llm,
@@ -27,7 +57,7 @@ def create_cert_agent():
 def create_env_agent():
     """Environment validation agent"""
     llm = ChatOllama(model="llama3.1:latest", temperature=0)
-    prompt = AGENT_PROMPTS[AgentRole.ENV_AGENT]
+    system_prompt = SQUAD_SUBAGENT_PROMPT + "\n\n" + AGENT_PROMPTS[AgentRole.ENV_AGENT]
     
     return create_react_agent(
         llm,
@@ -38,7 +68,7 @@ def create_env_agent():
 def create_proxy_agent():
     """Traefik proxy deployment agent"""
     llm = ChatOllama(model="llama3.1:latest", temperature=0)
-    prompt = AGENT_PROMPTS[AgentRole.PROXY_AGENT]
+    system_prompt = SQUAD_SUBAGENT_PROMPT + "\n\n" + AGENT_PROMPTS[AgentRole.PROXY_AGENT]
     
     return create_react_agent(
         llm,
@@ -49,7 +79,7 @@ def create_proxy_agent():
 def create_docker_agent():
     """Docker container monitoring agent"""
     llm = ChatOllama(model="llama3.1:latest", temperature=0)
-    prompt = AGENT_PROMPTS[AgentRole.DOCKER_AGENT]
+    system_prompt = SQUAD_SUBAGENT_PROMPT + "\n\n" + AGENT_PROMPTS[AgentRole.DOCKER_AGENT]
     
     return create_react_agent(
         llm,
@@ -60,7 +90,7 @@ def create_docker_agent():
 def create_cache_agent():
     """Redis & NATS management agent"""
     llm = ChatOllama(model="llama3.1:latest", temperature=0)
-    prompt = AGENT_PROMPTS[AgentRole.CACHE_AGENT]
+    system_prompt = SQUAD_SUBAGENT_PROMPT + "\n\n" + AGENT_PROMPTS[AgentRole.CACHE_AGENT]
     
     return create_react_agent(
         llm,
@@ -178,7 +208,7 @@ async def run_deep_agent_deployment():
 
 **Current Status:**
 - 17/32 services running (PostgreSQL, Redis, NATS, Redpanda, Grafana stack, Neo4j, Memgraph)
-- Docker networks created: edge, platform_net, gitlab_net, saaa_net, m2c_net, tinycrm_net
+- Docker networks created: edge, platform_net, saaa_net, m2c_net, tinycrm_net
 - SSL certificates available in ravenhelm-proxy/config/certs/
 
 **Tasks to Complete:**

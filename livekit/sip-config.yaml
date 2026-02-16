@@ -1,0 +1,35 @@
+# LiveKit SIP Server Configuration
+# Connects to shared LiveKit service at localhost:7880
+
+# Connection to main LiveKit server
+api_key: devkey
+api_secret: secret
+ws_url: ws://localhost:7880
+
+# Redis (optional, for SIP state)
+# redis:
+#   address: localhost:6379
+
+# SIP Configuration
+sip_port: 5060
+
+# RTP Configuration
+rtp_port: 10000-10100
+use_external_ip: true
+
+# Logging
+logging:
+  level: debug
+
+# SIP Trunks (who can call us)
+sip_trunks:
+  - id: twilio-trunk
+    name: "Twilio SIP Trunk"
+    # Twilio's IP ranges
+    allowed_addresses:
+      - "54.172.60.0/23"
+      - "54.244.51.0/24"
+      - "177.71.206.192/29"
+    # No auth required from Twilio (IP-based trust)
+    auth_mode: ip
+

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import Link from "next/link";
 import { PipelineNode, PipelineConnector, NodeStatus } from "./PipelineNode";
 import { EventTimeline, TimelineFilters, TimelineEvent, EventSubsystem, EventSeverity } from "./EventTimeline";
 import { HealthPanel, useServiceHealth } from "./HealthPanel";
@@ -8,8 +9,9 @@ import { ControlSurface } from "./ControlSurface";
 import { LLMConfigModal } from "@/components/llm-config";
 import { cn } from "@/lib/utils";
 import { useStreamContext } from "@/providers/Stream";
-import { useQueryState } from "nuqs";
-import { Settings, Cpu } from "lucide-react";
+import { Settings, Cpu, Wrench } from "lucide-react";
+import { useNornsSession } from "@/providers/NornsSessionProvider";
+import { toast } from "sonner";
 
 // Pipeline stage definitions
 const PIPELINE_STAGES = [
@@ -35,7 +37,8 @@ interface NornsConsoleProps {
 export function NornsConsole({ children }: NornsConsoleProps) {
   // Get the actual stream context
   const stream = useStreamContext();
-  const [threadId] = useQueryState("threadId");
+  const { config, shareLink } = useNornsSession();
+  const threadId = config?.threadId ?? null;
   
   // LLM Configuration modal
   const [showLLMConfig, setShowLLMConfig] = useState(false);
@@ -66,6 +69,25 @@ export function NornsConsole({ children }: NornsConsoleProps) {
   // Derive connection status from stream
   const isConnected = threadId !== null || stream.messages.length > 0;
   const isStreaming = stream.isLoading;
+  const handleCopySessionLink = useCallback(async () => {
+    try {
+      const link = await shareLink();
+      if (!link) {
+        toast.error("Unable to generate link", {
+          description: "Session configuration is missing.",
+        });
+        return;
+      }
+      await navigator.clipboard.writeText(link);
+      toast.success("Session link copied");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to copy session link", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }, [shareLink]);
+
 
   // Enhanced event logging helper
   const logEvent = useCallback((
@@ -340,6 +362,16 @@ export function NornsConsole({ children }: NornsConsoleProps) {
         </div>
         
         <div className="flex items-center gap-4 text-xs text-raven-400">
+          {/* Tools Registry Link */}
+          <Link
+            href="/tools"
+            className="flex items-center gap-2 px-3 py-1.5 bg-raven-800/50 hover:bg-raven-700/50 border border-raven-700/50 rounded-lg transition-colors"
+            title="Tool Registry"
+          >
+            <Wrench className="w-3.5 h-3.5 text-odin-400" />
+            <span className="font-medium text-raven-200">Tools</span>
+          </Link>
+          
           {/* LLM Config Button */}
           <button
             onClick={() => setShowLLMConfig(true)}
@@ -436,6 +468,7 @@ export function NornsConsole({ children }: NornsConsoleProps) {
               onEndSession={handleEndSession}
               onClearHistory={handleClearHistory}
               onDumpState={handleDumpState}
+            onShareLink={handleCopySessionLink}
               metrics={metrics}
             />
             

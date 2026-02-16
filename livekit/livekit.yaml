@@ -48,6 +48,11 @@ webhook:
   # API key to include in webhook requests
   api_key: ""
 
+# SIP Configuration (for telephony)
+# Note: 'enabled' field removed in newer LiveKit versions
+# sip:
+#   enabled: false  # Managed by separate livekit-sip service
+
 # Egress (recording/streaming) - optional
 # egress:
 #   s3:

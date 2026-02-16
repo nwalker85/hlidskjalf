@@ -17,14 +17,16 @@ services:
   #       condition: service_healthy
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   gitlab:
     image: gitlab/gitlab-ce:latest
     container_name: gitlab-sre-gitlab
     hostname: gitlab.ravenhelm.test
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
+      - "norns.ravenhelm.test:host-gateway"
     entrypoint:
       - /bin/sh
       - -c
@@ -63,6 +65,14 @@ services:
 
         # Time zone
         gitlab_rails['time_zone'] = 'America/New_York'
+
+        # Allow hooks to talk to local network (Traefik/Bifrost)
+        gitlab_rails['allow_requests_to_local_network_from_system_hooks'] = true
+        gitlab_rails['allow_requests_to_local_network_from_web_hooks_and_services'] = true
+        gitlab_rails['allow_local_requests_from_system_hooks'] = true
+        gitlab_rails['allow_local_requests_from_web_hooks_and_services'] = true
+        gitlab_rails['outbound_local_requests_allowlist'] = ['norns.ravenhelm.test']
+        gitlab_rails['webhook_allowed_ips'] = ['192.168.65.254']
 
         # Zitadel SSO (OpenID Connect)
         gitlab_rails['omniauth_enabled'] = true
@@ -115,7 +125,7 @@ services:
       start_period: 300s  # GitLab takes a while to start
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   gitlab-runner:
     image: gitlab/gitlab-runner:latest
@@ -128,7 +138,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LOCALSTACK - AWS Services Emulation
@@ -156,7 +166,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
 
   # =========================================================================
@@ -174,7 +184,7 @@ services:
   #     - "8889:8889"   # Prometheus exporter metrics
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Prometheus (Metrics)
@@ -195,7 +205,7 @@ services:
       - "9090:9090"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Loki (Logs)
@@ -211,7 +221,7 @@ services:
       - "3100:3100"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Alloy (Unified Log/Metric/Trace Collector)
@@ -239,7 +249,7 @@ services:
       - tempo
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Tempo (Traces)
@@ -257,7 +267,7 @@ services:
       - "9095:9095"   # Tempo gRPC
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Grafana (Dashboards)
@@ -266,6 +276,7 @@ services:
     image: grafana/grafana:latest
     container_name: gitlab-sre-grafana
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
@@ -280,16 +291,17 @@ services:
       - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${GRAFANA_OIDC_CLIENT_SECRET}
       # Include role scope for Zitadel project roles
       - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email urn:zitadel:iam:org:project:roles
-      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.test/oauth/v2/authorize
-      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.test/oauth/v2/token
-      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.test/oidc/v1/userinfo
+      # Updated to use .dev (staging) Zitadel instance
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.dev/oauth/v2/authorize
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.dev/oauth/v2/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.dev/oidc/v1/userinfo
       - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
       # Role mapping from Zitadel project roles
       # Zitadel returns roles as: {"urn:zitadel:iam:org:project:roles": {"admin": {"349394492048015386": "Ravenhelm Platform"}}}
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'admin') && 'Admin' || contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'operator') && 'Editor' || 'Viewer'
       - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
       - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
-      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=false
       # Auto-create Ravenhelm org
       - GF_USERS_AUTO_ASSIGN_ORG=true
       - GF_USERS_AUTO_ASSIGN_ORG_ID=1
@@ -306,7 +318,7 @@ services:
       - tempo
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Alertmanager
@@ -324,7 +336,7 @@ services:
       - "9093:9093"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - nginx for observe.ravenhelm.test
@@ -343,7 +355,7 @@ services:
   #     - prometheus
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # EVENT PLANE - Redpanda (Kafka-compatible)
@@ -368,8 +380,10 @@ services:
     ports:
       - "18081:18081"  # Schema Registry
       - "18082:18082"  # Pandaproxy (REST)
-      - "19092:19092"  # Kafka API
-      - "19644:9644"   # Admin API
+      - "9092:9092"    # Kafka API (standard port for external access)
+      - "19092:19092"  # Kafka API (alt port)
+      - "9644:9644"    # Admin API (standard port)
+      - "19644:9644"   # Admin API (alt port)
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
@@ -380,7 +394,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - Redpanda Console (UI)
@@ -389,6 +403,7 @@ services:
     image: docker.redpanda.com/redpandadata/console:latest
     container_name: gitlab-sre-redpanda-console
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - KAFKA_BROKERS=redpanda:9092
@@ -409,7 +424,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - nginx for events.ravenhelm.test
@@ -427,7 +442,7 @@ services:
   #     - redpanda-console
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # ZERO TRUST - SPIRE Server (Workload Identity)
@@ -450,7 +465,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ZERO TRUST - SPIRE Agent (Workload Attestation)
@@ -482,7 +497,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # HLIÐSKJÁLF - Odin's High Seat (Control Plane)
@@ -500,9 +515,10 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/hlidskjalf
       - REDIS_URL=rediss://:ravenhelm-redis-dev-password@redis:6379/2?ssl_cert_reqs=none
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
       - SPIRE_AGENT_SOCKET=/tmp/spire-agent/public/api.sock
       - TRUST_DOMAIN=ravenhelm.local
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       # The Norns - AI Agent
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - NORNS_MODEL=gpt-4o
@@ -513,7 +529,8 @@ services:
       - ./hlidskjalf/src:/app/src:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
-      - "8900:8900"
+      - "8000:8900"  # Expose internal 8900 as 8000 (port registry standard)
+      - "8900:8900"  # Keep 8900 for backward compatibility
     depends_on:
       postgres:
         condition: service_healthy
@@ -526,7 +543,7 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   hlidskjalf-ui:
     build:
@@ -541,19 +558,25 @@ services:
       - NEXT_PUBLIC_API_URL=https://hlidskjalf-api.ravenhelm.test
       - NEXT_PUBLIC_LANGGRAPH_API_URL=https://norns.ravenhelm.test
       - NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID=norns
+      - BACKEND_URL=http://hlidskjalf:8900
       # Internal Docker URL for server-side API calls
       - LANGGRAPH_API_URL=http://langgraph:2024
       # NextAuth Zitadel SSO (Server-side OIDC)
-      - AUTH_ZITADEL_ISSUER=https://zitadel.ravenhelm.test
+      # Multi-environment auth config (detects from NEXTAUTH_URL)
+      # Development: NEXTAUTH_URL=https://hlidskjalf.ravenhelm.test
+      # Staging: NEXTAUTH_URL=https://hlidskjalf.ravenhelm.dev
+      # Production: NEXTAUTH_URL=https://hlidskjalf.ravenhelm.ai
       - AUTH_ZITADEL_CLIENT_ID=${NEXTAUTH_HLIDSKJALF_CLIENT_ID}
       - AUTH_ZITADEL_CLIENT_SECRET=${NEXTAUTH_HLIDSKJALF_CLIENT_SECRET}
-      - NEXTAUTH_URL=https://hlidskjalf.ravenhelm.test
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-https://hlidskjalf.ravenhelm.test}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - AUTH_TRUST_HOST=true
       # Trust self-signed certs in dev (required for Zitadel SSO)
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     extra_hosts:
       - "zitadel.ravenhelm.test:host-gateway"
+      - "zitadel.ravenhelm.dev:host-gateway"
+      - "hlidskjalf-api.ravenhelm.test:host-gateway"
     ports:
       - "3900:3900"
     depends_on:
@@ -561,7 +584,70 @@ services:
       - langgraph
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
+
+  # =========================================================================
+  # MCP SERVER - GitLab automation via MCP
+  # =========================================================================
+  mcp-server-gitlab:
+    build:
+      context: ./services/mcp-server-gitlab
+    container_name: gitlab-sre-mcp-gitlab
+    user: "1001:1001"
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=mcp"
+      - "ravenhelm.workload=gitlab"
+    environment:
+      - GITLAB_BASE_URL=https://gitlab.ravenhelm.test
+      - GITLAB_API_URL=http://gitlab
+      - GITLAB_PROJECT_PATH=ravenhelm/hlidskjalf
+      - GITLAB_VERIFY_SSL=false
+      - GITLAB_MCP_SECRET_NAME=ravenhelm/dev/gitlab/mcp_service
+      - LOCALSTACK_ENDPOINT=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - MCP_SERVICE_PORT=9400
+      - TLS_REQUIRE_CLIENT_CERT=true
+      - REQUESTS_CA_BUNDLE=/certs/mkcert-ca.crt
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "9400:9400"
+    volumes:
+      - mcp_gitlab_certs:/run/spire/certs:ro
+      - ./ravenhelm-proxy/config/certs/mkcert-ca.crt:/certs/mkcert-ca.crt:ro
+    depends_on:
+      localstack:
+        condition: service_healthy
+      mcp-gitlab-spiffe-helper:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Sidecar: SPIFFE Helper for MCP GitLab certificates
+  mcp-gitlab-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-mcp-gitlab-spiffe-helper
+    user: "1001:1001"
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=mcp-gitlab"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"
+    volumes:
+      - ./config/spiffe-helper/mcp-gitlab-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - mcp_gitlab_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
 
   # =========================================================================
   # SHARED DATABASE - PostgreSQL + pgvector (Muninn's canonical truth)
@@ -606,7 +692,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Sidecar: SPIFFE Helper for PostgreSQL certificates
   postgres-spiffe-helper:
@@ -628,7 +714,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # HUGINN'S WIND - NATS JetStream (fast, low-latency state transport)
@@ -660,7 +746,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Sidecar: SPIFFE Helper for NATS certificates
   nats-spiffe-helper:
@@ -681,7 +767,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SHARED CACHE - Redis for platform services
@@ -713,7 +799,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # Sidecar: SPIFFE Helper for Redis certificates
   redis-spiffe-helper:
@@ -735,7 +821,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LLM OBSERVABILITY - LangFuse (LangGraph/LangChain tracing)
@@ -744,6 +830,7 @@ services:
     image: langfuse/langfuse:2  # v3 requires ClickHouse
     container_name: gitlab-sre-langfuse
     extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
       - "zitadel.ravenhelm.test:host-gateway"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
@@ -768,7 +855,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LLM OBSERVABILITY - Phoenix (Arize) for embeddings & RAG debugging
@@ -784,7 +871,7 @@ services:
       - "6006:6006"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SECRETS - OpenBao (Vault fork)
@@ -810,14 +897,14 @@ services:
     ports:
       - "8200:8200"
     healthcheck:
-      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8200/v1/sys/health?standbyok=true"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # IDENTITY - Zitadel (SSO / OAuth 2.1 / OIDC)
@@ -845,7 +932,7 @@ services:
       ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: postgres
       ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
       # External domain - standard HTTPS via Traefik ingress
-      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.test
+      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.dev
       ZITADEL_EXTERNALPORT: 443
       ZITADEL_EXTERNALSECURE: "true"
       # First instance setup
@@ -868,7 +955,7 @@ services:
       test: ["NONE"]
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ZERO-TRUST - OAuth2-Proxy (Forward Auth for Traefik)
@@ -883,7 +970,7 @@ services:
     environment:
       # Zitadel OIDC Configuration
       - OAUTH2_PROXY_PROVIDER=oidc
-      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.test
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.dev
       - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID}
       - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_CLIENT_SECRET}
       # Cookie settings
@@ -914,13 +1001,68 @@ services:
     ports:
       - "4180:4180"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4180/ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
       retries: 3
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
+
+  # =========================================================================
+  # ZERO-TRUST - OAuth2-Proxy for .dev domain (Staging Environment)
+  # =========================================================================
+  oauth2-proxy-staging:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: gitlab-sre-oauth2-proxy-staging
+    labels:
+      - "ravenhelm.project=hlidskjalf"
+      - "ravenhelm.service=oauth2-proxy-staging"
+      - "ravenhelm.workload=auth"
+      - "ravenhelm.environment=staging"
+    environment:
+      # Zitadel OIDC Configuration (staging environment)
+      # NOTE: Using .test issuer until staging .dev DNS is fully configured, then switch to https://zitadel.ravenhelm.dev
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.dev
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_STAGING_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_STAGING_CLIENT_SECRET}
+      # Cookie settings for staging (.dev) domain
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.ravenhelm.dev
+      - OAUTH2_PROXY_COOKIE_NAME=_ravenhelm_auth_dev
+      # Proxy settings
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4181
+      - OAUTH2_PROXY_REDIRECT_URL=https://auth.ravenhelm.dev/oauth2/callback
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=.ravenhelm.dev
+      # Auth settings
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_SCOPE=openid profile email
+      - OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+      - OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      # Reverse proxy mode for Traefik
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REAL_CLIENT_IP_HEADER=X-Forwarded-For
+      # Skip TLS verification for self-signed certs (needed for staging .dev → dev .test Zitadel fallback)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+      # Skip auth for specific paths
+      - OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/health$|^/ready$|^/metrics$|^/api/health$
+    extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "4181:4181"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - platform_net
 
   # Nginx proxy for zitadel.ravenhelm.test
   # DISABLED - Traefik handles zitadel.ravenhelm.test
@@ -936,7 +1078,7 @@ services:
   #     - zitadel
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # SECRETS - nginx for vault.ravenhelm.test
@@ -954,7 +1096,7 @@ services:
   #     - openbao
   #   restart: unless-stopped
   #   networks:
-  #     - gitlab-network
+  #     - platform_net
 
   # =========================================================================
   # AUTOMATION - n8n (Workflow Automation)
@@ -985,7 +1127,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -999,6 +1141,8 @@ services:
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:latest
     container_name: gitlab-sre-weaviate
+    profiles:
+      - docling
     command:
       - --host
       - 0.0.0.0
@@ -1028,7 +1172,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EMBEDDINGS - Sentence Transformers via HuggingFace TEI
@@ -1037,6 +1181,8 @@ services:
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
     container_name: gitlab-sre-embeddings
+    profiles:
+      - docling
     command:
       - --model-id
       - sentence-transformers/all-MiniLM-L6-v2
@@ -1054,7 +1200,7 @@ services:
       start_period: 120s  # Model download can take time
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # RERANKER - Cross-Encoder for result reranking
@@ -1062,6 +1208,8 @@ services:
   reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
     container_name: gitlab-sre-reranker
+    profiles:
+      - docling
     command:
       - --model-id
       - BAAI/bge-reranker-base
@@ -1079,7 +1227,7 @@ services:
       start_period: 120s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # DOCLING - Document Processing (IBM Research)
@@ -1088,6 +1236,8 @@ services:
   docling:
     image: ds4sd/docling-serve:latest
     container_name: gitlab-sre-docling
+    profiles:
+      - docling
     ports:
       - "8087:5000"  # Docling API
     volumes:
@@ -1102,7 +1252,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -1134,7 +1284,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # GRAPH DB - Neo4j (Enterprise-grade, APOC/GDS plugins)
@@ -1143,8 +1293,8 @@ services:
     image: neo4j:5-community
     container_name: gitlab-sre-neo4j
     ports:
-      - "7475:7474"   # HTTP (browser) - offset to avoid memgraph conflict
-      - "7688:7687"   # Bolt protocol - offset to avoid memgraph conflict
+      - "7474:7474"   # HTTP (browser)
+      - "7687:7687"   # Bolt protocol
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -1163,7 +1313,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -1191,7 +1341,7 @@ services:
     volumes:
       - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
     environment:
-      LIVEKIT_KEYS: "${LIVEKIT_KEYS:-devkey:secret}"
+      LIVEKIT_KEYS: "${LIVEKIT_KEYS:-devkey: secret}"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:7880"]
       interval: 30s
@@ -1200,7 +1350,7 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LANGGRAPH - Norns Agent Server
@@ -1230,7 +1380,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
     # Uncomment for GPU support:
     # deploy:
     #   resources:
@@ -1274,7 +1424,7 @@ services:
       start_period: 300s  # Models take time to load
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
     profiles:
       - huggingface  # Only start with: docker compose --profile huggingface up
     # Uncomment for GPU support (recommended for 14B):
@@ -1312,7 +1462,7 @@ services:
       start_period: 300s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
     profiles:
       - huggingface  # Only start with: docker compose --profile huggingface up
     # Uncomment for GPU support:
@@ -1343,7 +1493,8 @@ services:
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
       - REDIS_URL=rediss://:ravenhelm-redis-dev-password@redis:6379?ssl_cert_reqs=none
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/hlidskjalf
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
@@ -1371,7 +1522,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
 volumes:
   gitlab_config:
@@ -1391,6 +1542,7 @@ volumes:
   redis_certs:  # SPIRE certificates for Redis
   nats_data:
   nats_certs:  # SPIRE certificates for NATS
+  mcp_gitlab_certs:  # SPIRE certificates for MCP GitLab server
   prometheus_data:
   loki_data:
   alloy_data:
@@ -1412,9 +1564,6 @@ volumes:
   neo4j_plugins:
 
 networks:
-  gitlab-network:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.88.0.0/16
+  platform_net:
+    external: true
+    name: platform_net

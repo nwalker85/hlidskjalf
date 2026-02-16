@@ -268,7 +268,7 @@ voice-agent:
     - livekit
     - langgraph
   networks:
-    - gitlab-network
+    - platform_net
 ```
 
 ---

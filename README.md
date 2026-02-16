@@ -111,6 +111,34 @@ A system with **both** is *cognitive*.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Identity & Access Reference
+- Zitadel SSO & OAuth runbook: [`docs/runbooks/RUNBOOK-006-zitadel-sso.md`](docs/runbooks/RUNBOOK-006-zitadel-sso.md)
+- GitLab permission sync architecture: [`docs/architecture/ZITADEL_GITLAB_PERMISSION_SYNC.md`](docs/architecture/ZITADEL_GITLAB_PERMISSION_SYNC.md)
+
+### Permission Sync Agent
+Synchronize Zitadel project roles with GitLab group permissions:
+
+```bash
+export PERM_SYNC_ZITADEL_PROJECT_ID=<zitadel_project_id>
+export PERM_SYNC_ZITADEL_TOKEN=<svc_token>        # or PERM_SYNC_ZITADEL_SECRET for SecretsMgr
+export PERM_SYNC_GITLAB_TOKEN=<gitlab_pat>        # or PERM_SYNC_GITLAB_SECRET
+export PERM_SYNC_GITLAB_GROUP_ID=3                # ravenhelm group
+
+python -m services.permission_sync --run-once --dry-run
+# remove --dry-run after verifying output
+```
+
+Run continuously (cron/job) with:
+```bash
+python -m services.permission_sync
+```
+
+Configuration:
+- Mapping file: `config/permission-sync/mapping.yaml`
+- State file (managed members): `data/permission-sync-state.json`
+- Environment overrides: `PERM_SYNC_*` variables (see `services/permission_sync/config.py`)
+- Secrets can be pulled from LocalStack/AWS Secrets Manager via `PERM_SYNC_ZITADEL_SECRET` / `PERM_SYNC_GITLAB_SECRET`.
+
 ---
 
 ## Quick Start
@@ -351,12 +379,102 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/myapp
 REDIS_URL=redis://redis:6379/0
 KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
 NATS_URL=nats://nats:4222
-OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4317
 LANGFUSE_HOST=https://langfuse.observe.ravenhelm.test:8443
 ```
 
 > **Note:** Use Docker service names (postgres, redis, redpanda) for containers.  
 > Use `*.ravenhelm.test:8443` domains for browser/external access.
+
+---
+
+## Documentation & Wiki Workflow
+
+### 1. Author in the Repo First
+- **Architecture / strategy docs** live under `docs/` and are orchestrated via `docs/KNOWLEDGE_AND_PROCESS.md`.
+- **Runbooks** belong in `docs/runbooks/` (follow the RUNBOOK-### naming convention and include tags/frontmatter).
+- **Tables for the wiki** are generated in `docs/wiki/` (e.g., `Architecture_Index.md`, `Runbook_Catalog.md`). Update these whenever you change the source docs so we keep the SoT inside the repo.
+
+### 2. Push to the GitLab Wiki
+```bash
+# 1. Clone the wiki repo
+cd /Users/nwalker/Development
+git clone https://oauth2:<token>@gitlab.ravenhelm.test/ravenhelm/hlidskjalf.wiki.git hlidskjalf-wiki
+
+# 2. Copy rendered files from docs/wiki
+cp ./hlidskjalf/docs/wiki/*.md ./hlidskjalf-wiki/
+
+# 3. Commit & push
+cd hlidskjalf-wiki
+git config user.name  "Ravenhelm Platform Bot"
+git config user.email "bot@ravenhelm.test"
+git add .
+git commit -m "Sync wiki tables"
+git push origin main
+```
+
+Or automate it:
+
+```bash
+export GITLAB_TOKEN=glpat-...
+./scripts/sync_wiki.sh
+```
+
+### 3. Runbook Updates
+1. Add or edit the relevant `docs/runbooks/RUNBOOK-XXX-*.md` file.
+2. Reflect the change in `docs/wiki/Runbook_Catalog.md` (tags, prerequisites, TODOs).
+3. Open/close an issue on the Operations Board (see next section) so the update is tracked.
+
+---
+
+## Operations Board Workflow
+
+| Label | Meaning | When to use |
+|-------|---------|-------------|
+| `status::backlog` | Idea or request not yet prioritized | New work items, open questions |
+| `status::ready` | Groomed and ready for assignment | After acceptance criteria are defined |
+| `status::in-progress` | Actively being executed | Once you start the task (including wiki/runbook edits) |
+| `status::review` | Needs verification/PR review | After MR open but before merge |
+| `status::done` | Verified complete | When merged/deployed/documented |
+| `status::blocked` | Waiting on external dependency | Cert issues, missing approvals, upstream bugs |
+
+### Create/Update Issues
+```bash
+# Example: create an issue for a new runbook
+curl -s -X POST \
+  -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "title": "Runbook: Configure New Voice Agent",
+        "description": "Document the LiveKit + Deepgram steps...",
+        "labels": "wiki,status::backlog" }' \
+  https://gitlab.ravenhelm.test/api/v4/projects/2/issues
+```
+
+### Moving Cards
+Use the GitLab UI (`Issues → Boards → Operations Board`) or script it:
+```bash
+# Move issue IID 12 to in-progress
+curl -s -X PUT \
+  -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "add_labels": "status::in-progress",
+        "remove_labels": "status::ready" }' \
+  https://gitlab.ravenhelm.test/api/v4/projects/2/issues/12
+```
+
+Automation helper:
+
+```bash
+export GITLAB_TOKEN=glpat-...
+./scripts/ops_board.py list --labels wiki
+./scripts/ops_board.py create --title "Wiki: Add compliance section" --labels wiki status::backlog
+./scripts/ops_board.py move --iid 12 --add status::in-progress --remove status::ready
+```
+
+### Good Citizenship
+- Every documentation or operational change **must** have a corresponding issue.
+- Keep descriptions updated with links to PRs, runbooks, or wiki pages.
+- Close the issue (label `status::done`) only after wiki/runbook updates are merged and pushed.
 
 ---
 

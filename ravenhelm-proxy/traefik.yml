@@ -30,15 +30,24 @@ entryPoints:
 # Providers
 providers:
   docker:
-    endpoint: "unix:///var/run/docker.sock"
+    endpoint: "tcp://docker-socket-proxy:2375"
     exposedByDefault: false
-    network: "edge"
     watch: true
   file:
     filename: /etc/traefik/dynamic.yml
     watch: true
 
 # Certificate Resolvers & TLS
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: nathan@ravenhelm.dev
+      storage: /letsencrypt/acme.json
+      # Production Let's Encrypt (browser-trusted certificates)
+      # Staging was: https://acme-staging-v02.api.letsencrypt.org/directory
+      httpChallenge:
+        entryPoint: web
+
 tls:
   options:
     default:
@@ -49,6 +58,11 @@ tls:
         - "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
         - "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"
         - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/server.crt
+        keyFile: /certs/server.key
 
 # Logging
 log:

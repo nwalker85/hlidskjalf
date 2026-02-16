@@ -1,0 +1,14 @@
+---
+description: Security + integration rules for the MCP GitLab server.
+globs:
+  - "services/mcp-server-gitlab/**"
+alwaysApply: true
+---
+- Follow `docs/architecture/MCP_SERVER_DESIGN.md` and `docs/runbooks/RUNBOOK-023-mcp-gitlab-server.md` when touching this service.
+- Keep mutual TLS enforced. `TLS_REQUIRE_CLIENT_CERT` must stay `true`, and Traefik trusts the SPIRE bundle at `config/spiffe-helper/mcp-gitlab-helper.conf`. Never relax to insecure transports.
+- OAuth scopes: every client must request `mcp.gitlab.manage`. Token validation happens in `app/auth.py`; add scopes here, not ad-hoc in routes.
+- Secrets:
+  - GitLab PATs/wikis come from `ravenhelm/dev/gitlab/mcp_service` via `SecretFetcher`. Do not add new env vars with plain tokens.
+  - LocalStack endpoint/region come from settings; use the `Settings` object rather than re-reading `.env`.
+- Boto3 + httpx clients should be created once per process (see `_init_clients`) and reused. Long-lived requests must honor the container’s SPIFFE certs when talking mTLS backends.
+- Knowledge tools may **read only** until wiki automation is re-enabled. Respect the constraint documented in MCP_SERVER_DESIGN (“no direct wiki writes”).

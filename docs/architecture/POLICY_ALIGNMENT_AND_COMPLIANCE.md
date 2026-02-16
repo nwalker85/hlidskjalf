@@ -54,7 +54,7 @@ ravenhelm_hierarchy:
   environments:
     - dev:        # Current: localhost development
         domain: "*.ravenhelm.test"
-        networks: ["edge", "platform_net", "gitlab_net", "saaa_net", "m2c_net"]
+        networks: ["edge", "platform_net", "saaa_net", "m2c_net"]
         isolation: "Docker networks + DNS"
         
     - staging:    # Planned: Pre-production

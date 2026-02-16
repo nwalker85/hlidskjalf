@@ -321,6 +321,119 @@ class DeploymentManager:
         return discovered
 
 
+class DockerDiscoveryJob:
+    """
+    Background job to discover and sync Docker containers to deployment records
+    """
+    
+    def __init__(self, session_factory, interval_seconds: int = 30):
+        self.session_factory = session_factory
+        self.interval_seconds = interval_seconds
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+    
+    async def start(self):
+        """Start the Docker discovery job"""
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("Docker discovery job started", interval=self.interval_seconds)
+    
+    async def stop(self):
+        """Stop the Docker discovery job"""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Docker discovery job stopped")
+    
+    async def _run_loop(self):
+        """Main discovery loop"""
+        while self._running:
+            try:
+                async with self.session_factory() as session:
+                    manager = DeploymentManager(session)
+                    discovered = await manager.discover_docker_deployments()
+                    
+                    # Update or create deployment records for discovered containers
+                    for container_info in discovered:
+                        project_id = container_info.get("project_id")
+                        if not project_id:
+                            continue
+                        
+                        # Check if project exists
+                        project_result = await session.execute(
+                            select(ProjectRecord).where(ProjectRecord.id == project_id)
+                        )
+                        project = project_result.scalar_one_or_none()
+                        if not project:
+                            # Skip containers for unknown projects
+                            continue
+                        
+                        # Find existing deployment for this project in dev environment
+                        result = await session.execute(
+                            select(Deployment).where(
+                                and_(
+                                    Deployment.project_id == project_id,
+                                    Deployment.environment == Environment.MIDGARD
+                                )
+                            ).order_by(Deployment.deployed_at.desc()).limit(1)
+                        )
+                        deployment = result.scalar_one_or_none()
+                        
+                        container_id = container_info["container_id"]
+                        
+                        if deployment:
+                            # Update existing deployment
+                            container_ids = deployment.container_ids or []
+                            if container_id not in container_ids:
+                                container_ids.append(container_id)
+                                deployment.container_ids = container_ids
+                        else:
+                            # Create new deployment for this project
+                            # Generate ID: project-environment-timestamp
+                            from datetime import datetime
+                            deployment_id = f"{project_id}-midgard-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+                            deployment = Deployment(
+                                id=deployment_id,
+                                project_id=project_id,
+                                environment=Environment.MIDGARD,
+                                version="docker-discovered",
+                                container_ids=[container_id],
+                                status=DeploymentStatus.RUNNING if container_info["status"] == "running" else DeploymentStatus.STOPPED,
+                                health_status=HealthStatus.UNKNOWN,
+                            )
+                            session.add(deployment)
+                            logger.info(
+                                "Created deployment from Docker discovery",
+                                project_id=project_id,
+                                deployment_id=deployment_id,
+                                container_id=container_id
+                            )
+                        
+                        # Update status based on container status
+                        if container_info["status"] == "running":
+                            deployment.status = DeploymentStatus.RUNNING
+                        elif container_info["status"] in ["exited", "dead"]:
+                            deployment.status = DeploymentStatus.STOPPED
+                    
+                    await session.commit()
+                    
+                    if discovered:
+                        logger.debug(
+                            "Docker discovery complete",
+                            containers_found=len(discovered)
+                        )
+                
+            except Exception as e:
+                logger.error("Docker discovery error", error=str(e), exc_info=True)
+            
+            # Wait before next discovery
+            await asyncio.sleep(self.interval_seconds)
+
+
 class HealthCheckScheduler:
     """
     Background scheduler for periodic health checks

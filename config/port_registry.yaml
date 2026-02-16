@@ -36,7 +36,7 @@ ranges:
     start: 9000
     end: 9999
     description: Prometheus, exporters, metrics
-reserved:
+ports:
 - port: 5432
   service: postgres
   protocol: tcp
@@ -166,6 +166,71 @@ reserved:
   service: ravenhelm-proxy
   protocol: tcp
   description: HTTPS termination
+- port: 4180
+  service: oauth2-proxy
+  protocol: tcp
+  description: OAuth2-Proxy forward auth (dev .test)
+- port: 4181
+  service: oauth2-proxy-staging
+  protocol: tcp
+  description: OAuth2-Proxy forward auth (staging .dev)
+- port: 4182
+  service: oauth2-proxy-prod
+  protocol: tcp
+  description: OAuth2-Proxy forward auth (production .ai - future)
+  note: Reserved for production environment
+- port: 6701
+  service: model-server-http
+  protocol: tcp
+  description: External model server HTTP backend (Ollama/LLM endpoint)
+  host: 192.168.50.26
+  note: Internal HTTP service, proxied by Nginx on 6702
+- port: 6702
+  service: model-server-https
+  protocol: tcp
+  description: External model server HTTPS proxy (Nginx with mTLS)
+  host: 192.168.50.26
+  domain: models.ravenhelm.dev
+  security: mTLS (SPIRE via Nginx client cert validation)
+  note: Nginx proxy terminating mTLS, forwarding to 6701
+# ── m2c-demo isolated infrastructure ──────────────────────────────────────────
+- port: 5433
+  service: m2c-demo-postgres
+  protocol: tcp
+  description: M2C demo PostgreSQL (isolated from shared 5432)
+  project: m2c-demo
+- port: 5679
+  service: m2c-demo-n8n
+  protocol: tcp
+  description: M2C demo n8n instance (isolated from shared 5678)
+  project: m2c-demo
+- port: 29092
+  service: m2c-redpanda-kafka-ext
+  protocol: tcp
+  description: M2C Redpanda external Kafka listener
+  project: m2c-demo
+  note: 29xxx range avoids conflict with gitlab-sre-redpanda (19xxx)
+- port: 28081
+  service: m2c-redpanda-schema-ext
+  protocol: tcp
+  description: M2C Redpanda external Schema Registry
+  project: m2c-demo
+- port: 28082
+  service: m2c-redpanda-proxy-ext
+  protocol: tcp
+  description: M2C Redpanda external HTTP Proxy (Pandaproxy)
+  project: m2c-demo
+- port: 29644
+  service: m2c-redpanda-admin
+  protocol: tcp
+  description: M2C Redpanda Admin API
+  project: m2c-demo
+- port: 8089
+  service: m2c-redpanda-console
+  protocol: tcp
+  description: M2C Redpanda Console UI
+  project: m2c-demo
+  note: 8089 avoids conflict with gitlab-sre-redpanda-console (8088)
 platform:
   hlidskjalf-api:
     path: ~/Development/hlidskjalf/hlidskjalf
@@ -289,10 +354,84 @@ work:
     api_port: 8205
     ui_port: 3205
     domain: m2c.ravenhelm.test
+    domain_aliases:
+      - m2c-api.ravenhelm.test
     realm: jotunheim
     status: demo
     git_remote: github.com-quant
-    description: M2C demo application
+    description: M2C demo application - grid/utility compliance monitoring with LangGraph agents
+    services:
+      - name: backend
+        port: 8205
+        internal_port: 4000
+        protocol: http
+        health_endpoint: /health
+        note: Express + LangGraph API
+      - name: visualizer
+        port: 3205
+        internal_port: 3000
+        protocol: http
+        note: Next.js dashboard UI
+      - name: postgres
+        port: 5433
+        internal_port: 5432
+        protocol: tcp
+        note: Isolated PostgreSQL instance
+      - name: n8n
+        port: 5679
+        internal_port: 5678
+        protocol: http
+        health_endpoint: /healthz
+        note: Workflow orchestration (isolated instance)
+      - name: redpanda
+        ports:
+          kafka_external: 29092
+          schema_external: 28081
+          proxy_external: 28082
+          admin: 29644
+        internal_ports:
+          kafka: 9092
+          schema: 8081
+          proxy: 8082
+        protocol: tcp
+        note: Kafka-compatible streaming with dual-stack listeners (29xxx avoids gitlab-sre-redpanda)
+      - name: redpanda-console
+        port: 8089
+        internal_port: 8080
+        protocol: http
+        note: Redpanda/Kafka web UI (8089 avoids gitlab-sre-redpanda-console)
+  serviceasanagent:
+    path: ~/Development/Quant/Projects/serviceasanagent
+    api_port: 8209
+    ui_port: 3208
+    domain: saaa.ravenhelm.test
+    domain_aliases:
+      - frontend.saaa.ravenhelm.test
+      - api.saaa.ravenhelm.test
+      - agents.saaa.ravenhelm.test
+      - kafka.saaa.ravenhelm.test
+      - infra.saaa.ravenhelm.test
+      - core.saaa.ravenhelm.test
+      - capability.saaa.ravenhelm.test
+    realm: alfheim
+    status: demo
+    git_remote: github.com-quant
+    description: Service-as-an-Agent multi-agent voice platform
+    services:
+      - name: frontend
+        port: 3208
+        internal_port: 3000
+        protocol: http
+        note: Next.js operator console routed via nginx
+      - name: voice-api
+        port: 8209
+        internal_port: 8080
+        protocol: http
+        health_endpoint: /health
+        note: Routed via nginx to voice-io-agent
+      - name: agents
+        protocol: http
+        note: Deep/Research/Analysis via agents.saaa.ravenhelm.test (nginx)
   jira-interpreter:
     path: ~/Development/Quant/Projects/JiraInterpreter
     api_port: 8206
@@ -302,11 +441,40 @@ work:
     status: development
     git_remote: github.com-quant
     description: Jira integration tool
+  sip:
+    path: ~/Development/Quant/SIP
+    api_port: 8207
+    ui_port: 3207
+    domain: sip.ravenhelm.test
+    domain_aliases:
+      - sip-api.ravenhelm.test
+      - sip-langgraph.ravenhelm.test
+    realm: alfheim
+    status: development
+    git_remote: github.com-quant
+    description: SIP voice orchestration platform with LiveKit agents
+    services:
+      - name: backend
+        port: 8207
+        internal_port: 8000
+        protocol: http
+        health_endpoint: /health
+        note: FastAPI orchestration API + LiveKit control plane
+      - name: frontend
+        port: 3207
+        internal_port: 3000
+        protocol: http
+        note: Next.js operator console
+      - name: langgraph
+        port: 8208
+        internal_port: 8001
+        protocol: http
+        note: LangGraph agents runtime
 next_available:
   personal_api: 8103
   personal_ui: 3103
-  work_api: 8207
-  work_ui: 3207
+  work_api: 8209
+  work_ui: 3208
   sandbox_api: 8300
   sandbox_ui: 3300
 agents:

@@ -1,0 +1,314 @@
+# Ravenhelm Platform - Security Stack
+# =====================================
+# Zero-trust identity (SPIRE) + SSO (Zitadel) + Forward Auth
+#
+# Services: spire-server, spire-agent, all spiffe-helpers, zitadel, oauth2-proxy
+# Dependencies: None (spire-server is foundational)
+#
+# Start: docker compose -f compose/docker-compose.security.yml up -d
+
+include:
+  - docker-compose.base.yml
+
+services:
+  # =========================================================================
+  # ZERO TRUST - SPIRE Server (Certificate Authority)
+  # =========================================================================
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.0
+    container_name: gitlab-sre-spire-server
+    command: ["-config", "/opt/spire/conf/server/server.conf"]
+    volumes:
+      - ../spire/server:/opt/spire/conf/server:ro
+      - spire_server_data:/opt/spire/data
+      - spire_server_run:/tmp/spire-server/private
+    ports:
+      - "8081:8081"  # SPIRE Server API
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # ZERO TRUST - SPIRE Agent (Workload Attestation)
+  # =========================================================================
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.9.0
+    container_name: gitlab-sre-spire-agent
+    command: 
+      - "-config"
+      - "/opt/spire/conf/agent/agent.conf"
+      - "-joinToken"
+      - "${SPIRE_JOIN_TOKEN:-}"
+    volumes:
+      - ../spire/agent:/opt/spire/conf/agent:ro
+      - spire_agent_data:/opt/spire/data
+      - spire_server_run:/tmp/spire-server/private:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # For Docker workload attestation
+      # Expose agent socket for spiffe-helper sidecars
+      - spire_agent_socket:/tmp/spire-agent/public
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    pid: "host"  # Required for process attestation
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # SPIFFE HELPERS - Certificate Rotation Sidecars
+  # =========================================================================
+  
+  # PostgreSQL SPIFFE Helper
+  postgres-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-postgres-spiffe-helper
+    user: "1001:1001"  # ravenhelm platform user for consistent ownership
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=postgres"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"  # Required for SPIRE workload attestation
+    volumes:
+      - ../config/spiffe-helper/postgres-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - postgres_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # NATS SPIFFE Helper
+  nats-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-nats-spiffe-helper
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=nats"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"  # Required for SPIRE workload attestation
+    volumes:
+      - ../config/spiffe-helper/nats-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - nats_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # Redis SPIFFE Helper
+  redis-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-redis-spiffe-helper
+    user: "1001:1001"  # ravenhelm platform user for consistent ownership
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=redis"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"  # Required for SPIRE workload attestation
+    volumes:
+      - ../config/spiffe-helper/redis-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - redis_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # MCP GitLab SPIFFE Helper
+  mcp-gitlab-spiffe-helper:
+    image: spiffe-helper:local
+    container_name: gitlab-sre-mcp-gitlab-spiffe-helper
+    user: "1001:1001"
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=spiffe-helper"
+      - "ravenhelm.workload=mcp-gitlab"
+    entrypoint: ["/spiffe-helper", "-config", "/etc/spiffe-helper/helper.conf"]
+    pid: "host"
+    volumes:
+      - ../config/spiffe-helper/mcp-gitlab-helper.conf:/etc/spiffe-helper/helper.conf:ro
+      - mcp_gitlab_certs:/run/spire/certs
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # IDENTITY - Zitadel (SSO / OAuth 2.1 / OIDC)
+  # =========================================================================
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v2.62.1  # Last v2 stable with v1 login
+    container_name: gitlab-sre-zitadel
+    user: "1001:1001"  # ravenhelm platform user
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=zitadel"
+      - "ravenhelm.workload=zitadel"
+    command: start-from-init --masterkeyFromEnv --tlsMode external
+    environment:
+      # Master key for encryption (exactly 32 bytes)
+      ZITADEL_MASTERKEY: "RavenH3lmSecur3K3yForZ1t4d3l1234"
+      # Database
+      ZITADEL_DATABASE_POSTGRES_HOST: postgres
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: postgres
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # External domain - standard HTTPS via Traefik ingress
+      ZITADEL_EXTERNALDOMAIN: zitadel.ravenhelm.dev
+      ZITADEL_EXTERNALPORT: 443
+      ZITADEL_EXTERNALSECURE: "true"
+      # First instance setup
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: Ravenhelm
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: admin
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: "RavenAdmin123!"
+      # Console app redirect URIs
+      ZITADEL_CONSOLEPOSTLOGOUTREDIRECTURI: "https://zitadel.ravenhelm.test/ui/console"
+      ZITADEL_CONSOLEREDIRECTURI: "https://zitadel.ravenhelm.test/ui/console/auth/callback"
+      # Logging
+      ZITADEL_LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    # Healthcheck disabled - Zitadel distroless image has no shell
+    # Use /debug/ready externally to verify
+    healthcheck:
+      test: ["NONE"]
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # ZERO-TRUST - OAuth2-Proxy (Forward Auth for Traefik)
+  # =========================================================================
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: gitlab-sre-oauth2-proxy
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=oauth2-proxy"
+      - "ravenhelm.workload=auth"
+    environment:
+      # Zitadel OIDC Configuration
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.test
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_CLIENT_SECRET}
+      # Cookie settings
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.ravenhelm.test
+      - OAUTH2_PROXY_COOKIE_NAME=_ravenhelm_auth
+      # Proxy settings
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180
+      - OAUTH2_PROXY_REDIRECT_URL=https://auth.ravenhelm.test/oauth2/callback
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=.ravenhelm.test
+      # Auth settings
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_SCOPE=openid profile email
+      - OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+      - OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      # Reverse proxy mode for Traefik
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REAL_CLIENT_IP_HEADER=X-Forwarded-For
+      # Skip TLS verification for self-signed certs (dev only)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+      # Skip auth for specific paths
+      - OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/health$|^/ready$|^/metrics$|^/api/health$
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "4180:4180"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # ZERO-TRUST - OAuth2-Proxy for .dev domain (Staging Environment)
+  # =========================================================================
+  oauth2-proxy-staging:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: gitlab-sre-oauth2-proxy-staging
+    labels:
+      - "ravenhelm.project=hlidskjalf-security"
+      - "ravenhelm.service=oauth2-proxy-staging"
+      - "ravenhelm.workload=auth"
+      - "ravenhelm.environment=staging"
+    environment:
+      # Zitadel OIDC Configuration (staging environment)
+      # NOTE: Using .test issuer until staging .dev DNS is fully configured, then switch to https://zitadel.ravenhelm.dev
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://zitadel.ravenhelm.test
+      - OAUTH2_PROXY_CLIENT_ID=${OAUTH2_PROXY_STAGING_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${OAUTH2_PROXY_STAGING_CLIENT_SECRET}
+      # Cookie settings for staging (.dev) domain
+      - OAUTH2_PROXY_COOKIE_SECRET=${OAUTH2_PROXY_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=true
+      - OAUTH2_PROXY_COOKIE_DOMAINS=.ravenhelm.dev
+      - OAUTH2_PROXY_COOKIE_NAME=_ravenhelm_auth_dev
+      # Proxy settings
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4181
+      - OAUTH2_PROXY_REDIRECT_URL=https://auth.ravenhelm.dev/oauth2/callback
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=.ravenhelm.dev
+      # Auth settings
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_SCOPE=openid profile email
+      - OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+      - OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      # Reverse proxy mode for Traefik
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REAL_CLIENT_IP_HEADER=X-Forwarded-For
+      # Skip TLS verification for self-signed certs (needed for staging .dev → dev .test Zitadel fallback)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+      # Skip auth for specific paths
+      - OAUTH2_PROXY_SKIP_AUTH_ROUTES=^/health$|^/ready$|^/metrics$|^/api/health$
+    extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
+      - "zitadel.ravenhelm.test:host-gateway"
+    ports:
+      - "4181:4181"
+    healthcheck:
+      test: ["CMD", "/bin/oauth2-proxy", "--version"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - platform_net
+

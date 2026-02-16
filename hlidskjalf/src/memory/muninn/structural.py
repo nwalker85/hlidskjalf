@@ -268,6 +268,267 @@ class StructuralMemory:
         
         logger.info(f"Synced dossier to structural memory")
     
+    # =========================================================================
+    # Skill Relationship Graph (Procedural Memory)
+    # =========================================================================
+    
+    async def add_skill(
+        self,
+        skill_id: str,
+        name: str,
+        roles: list[str],
+        summary: str,
+        domain: str = "ravenhelm",
+        weight: float = 0.5,
+    ) -> bool:
+        """Add a skill node to the graph."""
+        node = GraphNode(
+            node_id=skill_id,
+            node_type="Skill",
+            name=name,
+            properties={
+                "summary": summary,
+                "domain": domain,
+                "roles": roles,
+                "weight": weight,
+            },
+        )
+        return await self.add_node(node)
+    
+    async def add_skill_dependency(
+        self,
+        skill_id: str,
+        required_skill_id: str,
+        relationship_type: str = "REQUIRES",
+    ) -> bool:
+        """
+        Add a dependency relationship between skills.
+        
+        Relationship types:
+        - REQUIRES: Hard dependency (must know before using)
+        - FOLLOWS: Sequential (usually done after)
+        - ALTERNATIVE_TO: Can be used instead of
+        - ENHANCES: Complements another skill
+        """
+        edge = GraphEdge(
+            edge_id=f"{skill_id}_{relationship_type}_{required_skill_id}",
+            edge_type=relationship_type,
+            source_id=skill_id,
+            target_id=required_skill_id,
+            properties={},
+        )
+        return await self.add_edge(edge)
+    
+    async def add_role_skill_permission(
+        self,
+        role_id: str,
+        skill_id: str,
+    ) -> bool:
+        """Add CAN_USE relationship between role and skill."""
+        edge = GraphEdge(
+            edge_id=f"{role_id}_CAN_USE_{skill_id}",
+            edge_type="CAN_USE",
+            source_id=role_id,
+            target_id=skill_id,
+            properties={},
+        )
+        return await self.add_edge(edge)
+    
+    async def get_skill_dependencies(
+        self,
+        skill_id: str,
+        recursive: bool = True,
+        use_memgraph: bool = True,
+    ) -> list[GraphNode]:
+        """
+        Get all dependencies for a skill.
+        
+        Args:
+            skill_id: Skill memory ID
+            recursive: Include transitive dependencies
+            use_memgraph: Use Memgraph for hot-path query
+            
+        Returns:
+            List of required skills
+        """
+        if recursive:
+            cypher = """
+                MATCH path = (s:Skill {id: $id})-[:REQUIRES*]->(dep:Skill)
+                RETURN DISTINCT dep.id as id, dep.name as name, dep as props
+            """
+        else:
+            cypher = """
+                MATCH (s:Skill {id: $id})-[:REQUIRES]->(dep:Skill)
+                RETURN dep.id as id, dep.name as name, dep as props
+            """
+        
+        results = await self.query(cypher, {"id": skill_id}, use_memgraph=use_memgraph)
+        
+        return [
+            GraphNode(
+                node_id=r["id"],
+                node_type="Skill",
+                name=r["name"],
+                properties=dict(r["props"]) if r["props"] else {},
+            )
+            for r in results
+        ]
+    
+    async def get_skills_for_role(
+        self,
+        role_id: str,
+        include_inherited: bool = True,
+        use_memgraph: bool = True,
+    ) -> list[GraphNode]:
+        """
+        Get all skills a role can use.
+        
+        Args:
+            role_id: Role identifier (e.g., "sre", "devops")
+            include_inherited: Include skills from parent roles
+            use_memgraph: Use Memgraph for hot-path query
+            
+        Returns:
+            List of authorized skills
+        """
+        if include_inherited:
+            # Include parent roles (e.g., SRE includes DevOps skills)
+            cypher = """
+                MATCH (r:Role {id: $id})
+                MATCH (r)-[:CAN_USE|INCLUDES*]->(s:Skill)
+                RETURN DISTINCT s.id as id, s.name as name, s as props
+                ORDER BY s.weight DESC
+            """
+        else:
+            cypher = """
+                MATCH (r:Role {id: $id})-[:CAN_USE]->(s:Skill)
+                RETURN s.id as id, s.name as name, s as props
+                ORDER BY s.weight DESC
+            """
+        
+        results = await self.query(cypher, {"id": role_id}, use_memgraph=use_memgraph)
+        
+        return [
+            GraphNode(
+                node_id=r["id"],
+                node_type="Skill",
+                name=r["name"],
+                properties=dict(r["props"]) if r["props"] else {},
+            )
+            for r in results
+        ]
+    
+    async def get_skill_workflow(
+        self,
+        start_skill_id: str,
+        use_memgraph: bool = True,
+    ) -> list[GraphNode]:
+        """
+        Get the typical workflow sequence starting from a skill.
+        
+        Follows FOLLOWS relationships to build a workflow chain.
+        
+        Returns:
+            Ordered list of skills in workflow
+        """
+        cypher = """
+            MATCH path = (s:Skill {id: $id})-[:FOLLOWS*0..10]->(next:Skill)
+            WITH path, length(path) as depth
+            ORDER BY depth
+            UNWIND nodes(path) as skill
+            RETURN DISTINCT skill.id as id, skill.name as name, skill as props
+        """
+        
+        results = await self.query(cypher, {"id": start_skill_id}, use_memgraph=use_memgraph)
+        
+        return [
+            GraphNode(
+                node_id=r["id"],
+                node_type="Skill",
+                name=r["name"],
+                properties=dict(r["props"]) if r["props"] else {},
+            )
+            for r in results
+        ]
+    
+    async def find_alternative_skills(
+        self,
+        skill_id: str,
+        use_memgraph: bool = True,
+    ) -> list[GraphNode]:
+        """
+        Find alternative skills that can be used instead.
+        
+        Useful for suggesting alternatives when a skill fails.
+        """
+        cypher = """
+            MATCH (s:Skill {id: $id})-[:ALTERNATIVE_TO]-(alt:Skill)
+            RETURN alt.id as id, alt.name as name, alt as props
+            ORDER BY alt.weight DESC
+        """
+        
+        results = await self.query(cypher, {"id": skill_id}, use_memgraph=use_memgraph)
+        
+        return [
+            GraphNode(
+                node_id=r["id"],
+                node_type="Skill",
+                name=r["name"],
+                properties=dict(r["props"]) if r["props"] else {},
+            )
+            for r in results
+        ]
+    
+    async def sync_skills_from_procedural_memory(
+        self,
+        procedural_memories: list,
+    ) -> int:
+        """
+        Sync skills from Muninn procedural memory to Neo4j graph.
+        
+        Args:
+            procedural_memories: List of MemoryFragment objects with type=PROCEDURAL
+            
+        Returns:
+            Number of skills synced
+        """
+        synced_count = 0
+        
+        for mem in procedural_memories:
+            if mem.topic != "skill":
+                continue
+            
+            # Add skill node
+            success = await self.add_skill(
+                skill_id=mem.id,
+                name=mem.features.get("name", "Unknown"),
+                roles=mem.features.get("roles", []),
+                summary=mem.summary or "",
+                domain=mem.domain,
+                weight=mem.weight,
+            )
+            
+            if not success:
+                continue
+            
+            # Add role permissions
+            for role in mem.features.get("roles", []):
+                await self.add_role_skill_permission(
+                    role_id=role,
+                    skill_id=mem.id,
+                )
+            
+            # Add dependencies
+            for dep_name in mem.features.get("dependencies", []):
+                # Find dependency by name (need to look up from memory store)
+                # This is simplified - in production you'd maintain a name->id mapping
+                pass
+            
+            synced_count += 1
+        
+        logger.info(f"Synced {synced_count} skills to structural memory")
+        return synced_count
+    
     async def close(self) -> None:
         """Clean up connections"""
         if self._neo4j_driver:

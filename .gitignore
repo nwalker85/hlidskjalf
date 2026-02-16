@@ -40,6 +40,9 @@ pnpm-debug.log*
 .next/
 .cache/
 
+# Permission sync state
+data/permission-sync-state.json
+
 # Logs & runtime output
 *.log
 logs/
@@ -66,3 +69,4 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
+.model-server-credentials

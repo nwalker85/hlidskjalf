@@ -63,8 +63,7 @@ services:
     image: your-image:latest
     container_name: gitlab-sre-your-service
     networks:
-      - gitlab-network
-      - platform_net  # For Traefik routing
+      - platform_net  # Shared platform network (Traefik-aware)
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=platform_net"

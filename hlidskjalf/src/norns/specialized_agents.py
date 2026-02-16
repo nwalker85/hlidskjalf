@@ -1,4 +1,4 @@
-"""
+"""  
 Specialized Subagent Definitions for the Norns Deep Agent
 
 Each subagent is a focused specialist with specific tools and capabilities.
@@ -10,23 +10,132 @@ LLM Provider Hierarchy:
 3. Claude Haiku - for security-critical agents only
 """
 
+# =============================================================================
+# SUBAGENT BASE PROMPT
+# =============================================================================
+
+SUBAGENT_BASE_PROMPT = """You are a Norns Subagent operating inside the Quant AI Ravenhelm platform.
+
+Your job: solve ONLY the specific subtask described in your instructions, using the platform fabrics and tools correctly.
+
+HOW TO THINK:
+[THINK]
+- Clarify the subtask goal and required output format.
+- Inspect any provided state/persona/memory snippets.
+- Decide which tools to call, and in what order.
+- Plan briefly before acting; stop when the subtask is satisfied.
+[/THINK]
+
+Then produce a clean Markdown answer with no internal reasoning.
+
+Rules:
+- Treat provided state (Huginn snapshot) as ground truth for the current session/turn.
+- Treat provided Persona Snapshot (Frigg) as ground truth for user context.
+- When you need docs/runbooks/ADRs/specs/history, call the memory tools (Muninn, e.g. memory.query).
+- If content appears unsafe, stale, or wrong, prefer governance tools (Hel) instead of using it directly.
+- Do NOT invent your own persistent storage or bypass platform constraints (Traefik-only ingress, platform_net, SPIRE mTLS, LocalStack secrets, GitLab issue taxonomy).
+
+Always:
+- Briefly restate your interpretation of the subtask.
+- Follow the requested output format exactly.
+- Include verification steps when you propose changes (commands, files, metrics).
+
+You are a focused specialist, not an orchestrator. Do NOT spawn other agents unless explicitly instructed.
+"""
+
+# =============================================================================
+# SPECIALIZED AGENT PROMPTS
+# =============================================================================
+
+SRE_PROMPT = """Specialization: You are Norns-SRE, a DevOps/SRE specialist.
+You focus on Docker/Compose, Traefik, platform_net, SPIRE mTLS, CI/CD, and infrastructure health.
+Respect all Ravenhelm constraints; prefer existing shared services (Postgres, Redis, NATS, Zitadel, LocalStack) over introducing new ones.
+"""
+
+OBSERVABILITY_PROMPT = """Specialization: You are Norns-Observability, an observability/monitoring specialist.
+You focus on logs, metrics, traces, Grafana/Loki/Prometheus/Tempo, and health trends.
+Prefer using existing dashboards and pipelines; propose new ones only when necessary, with paths and datasources explicitly referenced.
+"""
+
+SCHEMA_ARCHITECT_PROMPT = """Specialization: You are Norns-SchemaArchitect.
+You design and refine DB schemas, API contracts, JSON/DSL definitions, and Domain Intelligence (DIS) entities.
+Respect existing schemas and naming conventions; propose migrations and versioning paths, not breaking replacements.
+"""
+
+TECHNICAL_WRITER_PROMPT = """Specialization: You are Norns-TechnicalWriter.
+You draft and update docs: RUNBOOK-0xx, ADRs, wiki pages, PROJECT_PLAN.md, LESSONS_LEARNED.md.
+Write in clear, concise runbook/ADR style, with numbered steps and explicit preconditions/postconditions.
+"""
+
+GOVERNANCE_PROMPT = """Specialization: You are Norns-Governance.
+You focus on compliance, security, risk, and policy alignment.
+You cross-check proposals against the Enterprise Multi-Platform Architecture Scaffold and surface risks and mitigations explicitly.
+"""
+
+MEMORY_ADMIN_PROMPT = """Specialization: You are Norns-MemoryAdmin.
+You curate long-term memory: promotion/demotion, quarantine, tagging, and schema for episodic/semantic/procedural memory.
+You operate only through the memory and governance tools; you never bypass Muninn/Hel by editing raw databases.
+"""
+
+# =============================================================================
+# INSTRUCTION PATTERNS
+# =============================================================================
+
+MEMORY_TOOLS_INSTRUCTION = """Instruction to subagent:
+Use the memory tools to retrieve relevant docs/runbooks/ADRs before drafting the answer.
+
+Call pattern (conceptual):
+- Query:
+  - domain: "<domain (e.g. ravenhelm-platform, gitlab-sre, telephony)>"
+  - doc_types: ["runbook","wiki","adr","plan","spec"]
+  - retrieval_mode: "<design|runbook|architecture|troubleshooting>"
+  - query_text: "<short focused description of what you need>"
+
+Then:
+- Read the returned chunks.
+- Cite file paths and IDs (runbook/ADR) in your explanation.
+- Do NOT assume anything that is not present in state/context/memory.
+"""
+
+FILE_EDITING_INSTRUCTION = """Instruction to subagent:
+When editing files, follow this sequence:
+
+1) Read:
+- Use workspace_list to confirm path.
+- Use workspace_read to inspect current contents.
+
+2) Plan:
+- Decide what to change; summarize the change in 1–3 bullets.
+
+3) Write:
+- Use workspace_write with create_dirs=True when needed.
+- Preserve existing formatting and style.
+
+4) Verify:
+- Re-read the file with workspace_read to confirm the write.
+- Report diffs or key changes in your answer.
+"""
+
+TERMINAL_COMMAND_INSTRUCTION = """Instruction to subagent:
+Use terminal commands only for read-only checks unless explicitly told otherwise.
+
+Pattern:
+- Explain why the command is needed.
+- Show the exact command you will run.
+- Run execute_terminal_command or run_bash_command.
+- Summarize stdout/stderr; do not dump huge logs.
+- Propose follow-up actions as separate, clearly marked steps.
+"""
+
 from typing import Optional
 import logging
-from langchain_ollama import ChatOllama
-from langchain_anthropic import ChatAnthropic
+import asyncio
 from langgraph.prebuilt import create_react_agent
 from deepagents import CompiledSubAgent
 
 from src.core.config import get_settings
 
 logger = logging.getLogger(__name__)
-
-# HuggingFace TGI support
-try:
-    from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-    HF_AVAILABLE = True
-except ImportError:
-    HF_AVAILABLE = False
 
 # Composio is optional - will add enterprise tools when working
 try:
@@ -38,48 +147,77 @@ except ImportError:
     Action = None
 
 
-def get_agent_llm(require_reasoning: bool = False):
+async def get_agent_llm_async(require_reasoning: bool = False):
     """
-    Get the appropriate LLM for specialized agents.
-    
-    Supports: 'lmstudio', 'ollama' (configured via LLM_PROVIDER)
+    Get the appropriate LLM for specialized agents from database config.
     
     Args:
-        require_reasoning: If True, use the main chat model (better reasoning)
+        require_reasoning: If True, use subagents config, else use tools config
     
     Returns:
         LLM instance configured for agents
     """
-    from langchain_openai import ChatOpenAI
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from src.models.llm_config import InteractionType
+    from src.services.llm_config import LLMConfigService
+    
     settings = get_settings()
-    provider = settings.LLM_PROVIDER.lower()
     
-    if provider == "lmstudio":
-        # Use LM Studio - OpenAI-compatible API
-        logger.info(f"Using LM Studio at {settings.LMSTUDIO_URL} for agent")
-        return ChatOpenAI(
-            model=settings.LMSTUDIO_MODEL,
-            base_url=settings.LMSTUDIO_URL,
-            api_key="lm-studio",
-            temperature=0
-        )
+    try:
+        engine = create_async_engine(str(settings.DATABASE_URL), echo=False)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        
+        async with async_session() as session:
+            config_service = LLMConfigService(session)
+            
+            # Use subagents config for reasoning-critical, tools config for others
+            interaction_type = InteractionType.SUBAGENTS if require_reasoning else InteractionType.TOOLS
+            
+            llm = await config_service.get_llm_for_interaction(interaction_type)
+            logger.info(f"Loaded agent LLM from database config ({interaction_type.value})")
+            return llm
+            
+    except Exception as e:
+        logger.error(f"Failed to load agent LLM from config: {e}")
+        logger.warning("Falling back to default OpenAI configuration")
+        
+        from langchain_openai import ChatOpenAI
+        import os
+        
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("No LLM configuration available and OPENAI_API_KEY not set")
+        
+        model = "gpt-4o-mini"  # Default for agents
+        return ChatOpenAI(model=model, temperature=0)
+
+
+def get_agent_llm(require_reasoning: bool = False):
+    """
+    Synchronous wrapper for get_agent_llm_async.
     
-    if require_reasoning:
-        # Use main Norns model for better reasoning
-        logger.info(f"Using Ollama {settings.OLLAMA_CHAT_MODEL} for reasoning-critical agent")
-        return ChatOllama(
-            model=settings.OLLAMA_CHAT_MODEL,
-            base_url=settings.OLLAMA_URL,
-            temperature=0
-        )
+    Args:
+        require_reasoning: If True, use subagents config, else use tools config
     
-    # Default: Faster agent model
-    logger.info(f"Using Ollama {settings.OLLAMA_AGENT_MODEL} for agent")
-    return ChatOllama(
-        model=settings.OLLAMA_AGENT_MODEL,
-        base_url=settings.OLLAMA_URL,
-        temperature=0
-    )
+    Returns:
+        LLM instance configured for agents
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Create new loop if called from async context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(get_agent_llm_async(require_reasoning))
+            finally:
+                loop.close()
+        else:
+            return loop.run_until_complete(get_agent_llm_async(require_reasoning))
+    except Exception as e:
+        logger.error(f"Failed to get agent LLM: {e}")
+        raise
 
 from src.norns.tools import (
     workspace_read,
@@ -87,6 +225,94 @@ from src.norns.tools import (
     workspace_list,
     execute_terminal_command,
 )
+from src.norns.memory_tools import skills_retrieve
+
+
+# =============================================================================
+# SKILLS RAG HELPER
+# =============================================================================
+
+async def retrieve_agent_skills_async(role: str, task_context: str, k: int = 3) -> str:
+    """
+    Retrieve relevant skills for an agent using RAG (async version).
+    
+    Args:
+        role: Agent role (sre, devops, technical_writer, etc.)
+        task_context: Brief description of the task
+        k: Number of skills to retrieve
+        
+    Returns:
+        Formatted skills section for injection into system prompt
+    """
+    try:
+        # Retrieve skills from Muninn
+        skills = await skills_retrieve(
+            query=task_context,
+            role=role,
+            k=k
+        )
+        
+        if not skills or (isinstance(skills, dict) and "error" in skills):
+            logger.warning(f"No skills retrieved for role={role}, using base prompt only")
+            return ""
+        
+        # Format skills for prompt injection
+        skills_section = "\n\n## 🛠️ Relevant Skills\n\n"
+        skills_section += "The following skills have been retrieved based on your task. Follow these patterns:\n\n"
+        
+        for skill in skills:
+            name = skill.get("name", "unknown")
+            content = skill.get("content", "")
+            summary = skill.get("summary", "")
+            
+            skills_section += f"### {name}\n"
+            if summary:
+                skills_section += f"_{summary}_\n\n"
+            skills_section += f"{content}\n\n"
+            skills_section += "---\n\n"
+        
+        return skills_section
+        
+    except Exception as e:
+        logger.error(f"Failed to retrieve skills for role={role}: {e}")
+        return ""
+
+
+def retrieve_agent_skills(role: str, task_context: str, k: int = 3) -> str:
+    """
+    Retrieve relevant skills for an agent using RAG (sync wrapper).
+    
+    Args:
+        role: Agent role (sre, devops, technical_writer, etc.)
+        task_context: Brief description of the task
+        k: Number of skills to retrieve
+        
+    Returns:
+        Formatted skills section for injection into system prompt
+    """
+    try:
+        # Try to get or create event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Run the async function
+        if loop.is_running():
+            # If we're already in an async context, we can't block
+            # This shouldn't happen during agent creation, but just in case
+            logger.warning(f"Cannot retrieve skills synchronously from running event loop for role={role}")
+            return ""
+        else:
+            return loop.run_until_complete(retrieve_agent_skills_async(role, task_context, k))
+    except Exception as e:
+        logger.error(f"Failed to retrieve skills synchronously for role={role}: {e}")
+        # Fall back to empty skills section
+        return ""
 
 
 # =============================================================================
@@ -99,6 +325,14 @@ def create_file_management_agent() -> CompiledSubAgent:
     Model: Ollama (fast, local)
     Tools: workspace_read/write/list, file search, git operations
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="sre",
+        task_context="file editing, workspace operations, reading and writing files safely, git operations",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + skills_context
     llm = get_agent_llm()
     
     # Base tools
@@ -116,7 +350,13 @@ def create_file_management_agent() -> CompiledSubAgent:
         except:
             pass  # Continue without Composio
     
-    agent = create_react_agent(llm, tools=tools)
+    # Create agent with system prompt via state_modifier
+    from langchain_core.messages import SystemMessage
+    agent = create_react_agent(
+        llm,
+        tools=tools,
+        state_modifier=SystemMessage(content=system_prompt)
+    )
     
     return CompiledSubAgent(
         name="file_manager",
@@ -140,11 +380,24 @@ def create_app_installer_agent() -> CompiledSubAgent:
     Model: Ollama
     Tools: terminal execution, package managers, Docker
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="devops",
+        task_context="package installation, dependency management, docker builds, npm/pip/cargo installations",
+        k=2
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + skills_context
     llm = get_agent_llm()
     
     tools = [execute_terminal_command, workspace_read]
     
-    agent = create_react_agent(llm, tools=tools)
+    from langchain_core.messages import SystemMessage
+    agent = create_react_agent(
+        llm,
+        tools=tools,
+        state_modifier=SystemMessage(content=system_prompt)
+    )
     
     return CompiledSubAgent(
         name="app_installer",
@@ -168,11 +421,21 @@ def create_networking_agent() -> CompiledSubAgent:
     Model: Ollama
     Tools: terminal, docker network commands
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="sre",
+        task_context="docker networking, traefik configuration, service discovery, DNS setup, platform_net edge_net networks",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + SRE_PROMPT + skills_context
     llm = get_agent_llm()
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[execute_terminal_command, workspace_read]
+        tools=[execute_terminal_command, workspace_read],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -198,11 +461,24 @@ def create_security_agent() -> CompiledSubAgent:
     Model: Claude Haiku (security requires better reasoning)
     Tools: terminal, SPIRE commands, certificate operations
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="security",
+        task_context="SSL/TLS certificates, SPIRE mTLS configuration, certificate management, secret handling, LocalStack secrets",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + """Specialization: Security, certificates, and mTLS.
+You focus on SPIRE, SSL/TLS certificates, mTLS configuration, and LocalStack Secrets Manager.
+Always verify certificate chains and trust anchors. Never skip TLS validation unless explicitly documenting a dev-only exception.""" + skills_context
+    
     llm = get_agent_llm(require_reasoning=True)
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[execute_terminal_command, workspace_read, workspace_write]
+        tools=[execute_terminal_command, workspace_read, workspace_write],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -228,11 +504,24 @@ def create_qa_agent() -> CompiledSubAgent:
     Model: Ollama
     Tools: pytest, test execution, validation
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="qa",
+        task_context="testing, validation, health checks, deployment verification, test execution, quality assurance",
+        k=2
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + """Specialization: Quality Assurance and Testing.
+You validate configurations, run tests, check health endpoints, and verify deployments.
+Always provide clear pass/fail results with specific evidence (logs, metrics, exit codes).""" + skills_context
+    
     llm = get_agent_llm()
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[execute_terminal_command, workspace_read, workspace_write]
+        tools=[execute_terminal_command, workspace_read, workspace_write],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -259,11 +548,21 @@ def create_observability_agent() -> CompiledSubAgent:
     Tools: Log streaming, metrics queries, trace analysis
     Special: Subscribes to ALL Kafka topics to monitor the swarm
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="sre",
+        task_context="observability, monitoring, logs analysis, metrics, traces, Grafana dashboards, Loki queries, Prometheus",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + OBSERVABILITY_PROMPT + skills_context
     llm = get_agent_llm()
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[execute_terminal_command, workspace_read]
+        tools=[execute_terminal_command, workspace_read],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -296,11 +595,24 @@ def create_sso_expert() -> CompiledSubAgent:
     Model: Claude Haiku (identity is critical)
     Tools: Zitadel API, OAuth configuration
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="security",
+        task_context="Zitadel, OIDC, OAuth 2.1, identity management, JWT validation, RBAC, SPIFFE ID",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + """Specialization: Identity and Access Management.
+You focus on Zitadel, OAuth 2.1, OIDC flows, JWT validation, and RBAC policy design.
+Always verify token signatures and respect identity constraints.""" + skills_context
+    
     llm = get_agent_llm(require_reasoning=True)
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[execute_terminal_command, workspace_read, workspace_write]
+        tools=[execute_terminal_command, workspace_read, workspace_write],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -327,6 +639,7 @@ def create_schema_designer() -> CompiledSubAgent:
     Model: Claude Haiku (schema design needs good reasoning)
     Tools: SQL generation, Pydantic models, AsyncAPI
     """
+    system_prompt = SUBAGENT_BASE_PROMPT + SCHEMA_ARCHITECT_PROMPT + FILE_EDITING_INSTRUCTION
     llm = get_agent_llm(require_reasoning=True)
     
     agent = create_react_agent(
@@ -420,11 +733,21 @@ def create_governance_agent() -> CompiledSubAgent:
     Model: Claude Sonnet (governance requires sophisticated reasoning)
     Tools: Policy documents, compliance frameworks
     """
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="governance",
+        task_context="governance, compliance, risk assessment, policy enforcement, regulatory requirements, GDPR, HIPAA, audit",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + GOVERNANCE_PROMPT + skills_context
     llm = get_agent_llm(require_reasoning=True)
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[workspace_read, workspace_write]
+        tools=[workspace_read, workspace_write],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -490,11 +813,21 @@ Use me to plan and coordinate complex multi-agent projects.""",
 
 def create_documentation_agent() -> CompiledSubAgent:
     """Documentation and technical writing specialist"""
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="technical_writer",
+        task_context="technical documentation, runbooks, ADRs, README files, API documentation, architecture docs, technical writing",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + TECHNICAL_WRITER_PROMPT + skills_context
     llm = get_agent_llm()
     
+    from langchain_core.messages import SystemMessage
     agent = create_react_agent(
         llm,
-        tools=[workspace_read, workspace_write, workspace_list]
+        tools=[workspace_read, workspace_write, workspace_list],
+        state_modifier=SystemMessage(content=system_prompt)
     )
     
     return CompiledSubAgent(
@@ -511,7 +844,15 @@ Use me to document anything.""",
 
 
 def create_devops_agent() -> CompiledSubAgent:
-    """DevOps and CI/CD specialist"""
+    """DevOps and CI/CD specialist - Uses SRE prompt"""
+    # Retrieve relevant skills via RAG
+    skills_context = retrieve_agent_skills(
+        role="devops",
+        task_context="DevOps, CI/CD pipelines, docker compose, kubernetes, deployments, infrastructure as code, GitOps",
+        k=3
+    )
+    
+    system_prompt = SUBAGENT_BASE_PROMPT + SRE_PROMPT + skills_context
     llm = get_agent_llm()
     
     tools = [execute_terminal_command, workspace_read, workspace_write]

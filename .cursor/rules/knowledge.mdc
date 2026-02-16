@@ -1,0 +1,21 @@
+---
+description: Canonical documentation + workflow references for Ravenhelm.
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+## Always anchor work in the wiki/runbooks
+- The `/Users/nwalker/Development/hlidskjalf/docs/wiki` tree is the authoritative knowledge base. Before creating new guidance, check `docs/wiki/Runbook_Catalog.md`, `docs/wiki/Overview.md`, and `docs/wiki/Operations.md` so we extend the right section instead of duplicating content.
+- Runbooks live under `/Users/nwalker/Development/hlidskjalf/docs/runbooks`. Follow the numbering scheme (RUNBOOK-0xx) and update the catalog whenever you add or materially change a playbook.
+- Architectural decisions (ADRs) belong in `/Users/nwalker/Development/hlidskjalf/docs/architecture`. Record deltas—especially security or networking changes—in `docs/LESSONS_LEARNED.md` the moment you discover them.
+- Keep `PROJECT_PLAN.md` current (“save” it) whenever progress is made so phase status reflects reality before the next task starts.
+
+## GitLab + issue hygiene
+- Reference `docs/process/AGILE_OPERATING_MODEL.md` for label taxonomy and workflow states. Every issue needs exactly one `type::`, one `workflow::`, plus the relevant `area::`/`okr::` tags before the Norns queue can act.
+- The Norns automation only pulls items that carry both `actor::norns` and `workflow::ready`. When creating new automation hooks or webhooks, document them in `docs/runbooks/RUNBOOK-025-norns-work-queue.md`.
+
+## Personal/operator context
+- Nate Walker (the current operator) prefers actionable, concise outputs with explicit verification steps. Default to absolute repository paths when pointing to files so instructions remain unambiguous across terminals.
+- When you invent new workflows, summarize the “why” in `docs/FINAL_ACCOMPLISHMENTS.md` or `docs/NORNS_MISSION_LOG.md` so other repos can reuse the same approach without rediscovery.
+- Any architectural suggestion that materially impacts shared services, governance, or compliance must be cross-checked against the Enterprise Multi-Platform Architecture Scaffold at `/Users/nwalker/Documents/Enterprise_MultiPlatform_Architecture_Scaffold_v1.3.0.md`. Cite the relevant section when deviating or extending those principles.

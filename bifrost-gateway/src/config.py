@@ -4,6 +4,8 @@ Bifrost Gateway Configuration
 Supports multiple adapters and AI backends with individual configuration.
 """
 
+from __future__ import annotations
+
 from functools import lru_cache
 from typing import Optional
 
@@ -33,6 +35,12 @@ class Settings(BaseSettings):
 
     # Redis for conversation state (shared across adapters)
     REDIS_URL: str = "redis://redis:6379/3"
+
+    # AWS / Secrets
+    AWS_ENDPOINT_URL: str | None = "http://localstack:4566"
+    AWS_REGION: str = "us-east-1"
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
 
     # =========================================================================
     # AI BACKEND SELECTION
@@ -71,6 +79,17 @@ class Settings(BaseSettings):
     MCP_SERVER_URL: Optional[str] = None
     MCP_CHAT_TOOL: str = "chat"
     MCP_USE_SSE: bool = True
+
+    # =========================================================================
+    # GitLab Work Items / Norns queue
+    # =========================================================================
+    GITLAB_BASE_URL: str = "https://gitlab.ravenhelm.test"
+    GITLAB_PROJECT_ID: int = 2
+    GITLAB_PAT: str | None = None
+    GITLAB_PAT_SECRET_NAME: str = "ravenhelm/dev/gitlab/mcp_service"
+    GITLAB_WEBHOOK_SECRET: str | None = None
+    GITLAB_WEBHOOK_SECRET_NAME: str = "ravenhelm/dev/gitlab/webhook/norns"
+    WORKQUEUE_POLL_INTERVAL_SECONDS: int = 180
 
     # =========================================================================
     # CUSTOM SYSTEM PROMPT (used by direct backends)

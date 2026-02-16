@@ -83,7 +83,7 @@ def update_compose_file():
             
             # Also add edge network
             updated_lines.append(line)  # Add the networks: line
-            updated_lines.append(f"{labels_indent}  - gitlab-network")
+            updated_lines.append(f"{labels_indent}  - platform_net")
             updated_lines.append(f"{labels_indent}  - edge")
             in_service = None
             continue

@@ -357,7 +357,7 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - gitlab-network
+      - platform_net
 
   zitadel:
     image: ghcr.io/zitadel/zitadel:v2.64.1
@@ -397,7 +397,7 @@ services:
       retries: 10
       start_period: 60s
     networks:
-      - gitlab-network
+      - platform_net
       - platform_net
     labels:
       - "traefik.enable=true"
@@ -847,7 +847,7 @@ agent = create_react_agent(
 
 ### Network Segmentation
 
-**Current:** All services on `gitlab-network` (too permissive)
+**Current:** All services on `platform_net` (too permissive)
 
 **Improved:** Service-specific networks with policies
 

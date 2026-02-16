@@ -6,10 +6,10 @@ import { InboxItemInput } from "./inbox-item-input";
 import useInterruptedActions from "../hooks/use-interrupted-actions";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { useQueryState } from "nuqs";
 import { constructOpenInStudioURL, buildDecisionFromState } from "../utils";
 import { Decision, HITLRequest, DecisionType, ActionRequest } from "../types";
 import { useStreamContext } from "@/providers/Stream";
+import { useNornsSession } from "@/providers/NornsSessionProvider";
 
 interface ThreadActionsViewProps {
   interrupt: Interrupt<HITLRequest>;
@@ -87,8 +87,9 @@ export function ThreadActionsView({
   showState,
 }: ThreadActionsViewProps) {
   const stream = useStreamContext();
-  const [threadId] = useQueryState("threadId");
-  const [apiUrl] = useQueryState("apiUrl");
+  const { config } = useNornsSession();
+  const threadId = config?.threadId ?? null;
+  const apiUrl = config?.apiUrl ?? null;
   const [currentIndex, setCurrentIndex] = useState(0);
   const [addressedActions, setAddressedActions] = useState<
     Map<number, Decision>

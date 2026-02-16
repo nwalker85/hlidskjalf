@@ -38,6 +38,29 @@ with minimal changes to the core system.
 - Understanding of the target platform's API
 - API credentials for the target platform
 
+### Slack Adapter Readiness (Platform Standard)
+
+Slack is the next gating adapter. Before enabling it (or cloning the pattern for another workspace), complete the following:
+
+1. **Workspace App & Scopes**
+   - Create a Slack App with scopes: `chat:write`, `app_mentions:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `commands`, `reactions:write`.
+   - Enable Events API for `app_mention`, `message.im`, `message.groups`, `message.mpim`, and optionally interactive components if alert buttons will call back.
+2. **Secrets & Configuration**
+   - Store `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` in LocalStack (`ravenhelm/dev/bifrost/slack_bot`) as `{ "bot_token": "...", "signing_secret": "..." }`.
+   - Populate `/Users/nwalker/Development/hlidskjalf/bifrost-gateway/.env` via `awslocal secretsmanager get-secret-value` instead of copying secrets into compose files.
+   - Use `SLACK_ALLOWED_USERS` and `SLACK_ALLOWED_CHANNELS` to mirror Zitadel RBAC (only operators / SRE channels talk to Norns).
+3. **Traefik + SPIRE**
+   - Ensure `bifrost-gateway` joins `platform_net` and expose `/webhook/slack` via Traefik (`bifrost.ravenhelm.test`). For administrative endpoints, wrap with `oauth2-proxy` so Zitadel SSO is enforced.
+   - Keep Slack’s webhook unauthenticated at the edge but implement HMAC verification (`X-Slack-Signature`, `X-Slack-Request-Timestamp`) inside `SlackAdapter.verify_webhook`, rejecting requests older than five minutes.
+4. **Alert Workflow Integration**
+   - Define the ChatOps UX: alert summary + buttons (`Ack`, `Escalate`, `Run Remediation`). Buttons should hit new Bifrost actions endpoints that require Zitadel-issued JWTs or SPIFFE mTLS.
+   - Plan slash commands (`/norns status`, `/norns handoff`) and document them in `docs/wiki/Operations.md`.
+5. **Testing & Runbooks**
+   - Use Slack “Send sample event” to test URL verification before production.
+   - Update `docs/runbooks/RUNBOOK-008-alert-response.md` (pending) and `docs/NORNS_MISSION_LOG.md` once Slack is live so on-call rotations know where alerts surface.
+
+---
+
 ## Steps
 
 ### 1. Create the Adapter File

@@ -181,18 +181,19 @@ All human access goes through Zitadel SSO. All machine access uses OAuth 2.1.
 | Create Ravenhelm Group | 🔴 | ✅ |
 | Set up admin user | 🔴 | ✅ |
 | Generate GitLab API token | 🟡 | ⏳ |
-| **MCP Shared Services Tool** | 🔴 | ⏳ |
-| ↳ Research MCP protocol & best practices | 🔴 | ⏳ |
-| ↳ Architect multi-service MCP server | 🔴 | ⏳ |
-| ↳ Build GitLab MCP tools | 🔴 | ⏳ |
-| ↳ Build Zitadel MCP tools | 🔴 | ⏳ |
-| ↳ Build Docker MCP tools | 🟡 | ⏳ |
-| ↳ Test MCP server integration | 🔴 | ⏳ |
-| ↳ UAT with Norns agent | 🔴 | ⏳ |
+| **MCP Shared Services Tool – Phase 4A** | 🔴 | ✅ |
+| ↳ Research MCP protocol & best practices | 🟢 | ✅ Dec 3 |
+| ↳ Architect multi-service MCP server | 🟢 | ✅ Dec 3 |
+| ↳ Build GitLab MCP tools (projects, runners, knowledge read) | 🟢 | ✅ (see `services/mcp-server-gitlab/`) |
+| ↳ Build Zitadel MCP tools | 🔴 | ✅ Dec 4 |
+| ↳ Build Docker MCP tools | 🟡 | ✅ Dec 4 |
+| ↳ Test MCP server integration (Traefik + SPIRE mTLS) | 🟢 | ✅ (`mcp.gitlab.ravenhelm.test`) |
+| ↳ UAT with Norns agent | 🟡 | ⏳ |
 | Implement Zitadel→GitLab permission sync | 🟡 | ⏳ |
 | Import ravenmaskos template | 🔴 | ⏳ |
 | Configure AWS credentials in Vault | 🔴 | ⏳ |
 | Test Terraform deployment | 🟡 | ⏳ |
+| Automate wiki + Operations Board workflows (`scripts/sync_wiki.sh`, `scripts/ops_board.py`) | 🟡 | ✅ |
 
 ### Phase 5: Advanced Features (WEEK 6+)
 **Goal:** Voice, chat, observability
@@ -200,9 +201,24 @@ All human access goes through Zitadel SSO. All machine access uses OAuth 2.1.
 | Task | Priority | Status |
 |------|----------|--------|
 | LiveKit with mTLS | 🟡 | ⏳ |
+| SIP Voice AI Platform (`~/Development/Quant/SIP`) | 🔴 | ✅ **Active Development** |
+| ├─ LiveKit agent worker (outbound calling) | 🔴 | ✅ |
+| ├─ Inbound SIP webhook handler | 🔴 | ✅ |
+| ├─ Agent control GUI | 🟡 | ✅ |
+| ├─ Port registry integration (8207, 3207, 8208) | 🔴 | ✅ |
+| ├─ Traefik routing (sip.ravenhelm.test) | 🔴 | ✅ |
+| ├─ RUNBOOK-027 created | 🔴 | ✅ |
+| └─ Twilio API integration | 🟡 | ✅ |
 | Bifrost with OAuth | 🟡 | ⏳ |
 | Cost tracking | 🟡 | ⏳ |
 | Audit dashboards | 🟡 | ⏳ |
+
+**SIP Platform Status** (as of 2025-12-04):
+- Project path: `/Users/nwalker/Development/Quant/SIP`
+- Running: Backend (8207), Frontend (3207), LangGraph (8208), Agent Worker
+- Deployment mode: Cloud LiveKit (development)
+- Ready for: Inbound/outbound calling, warm transfer implementation
+- Next: Enterprise call escalation patterns (Week 1 priority)
 
 ### Phase 6: Monitoring, Alerting & Self-Healing (WEEK 7+)
 **Goal:** Automated incident detection, AI-driven triage, self-healing
@@ -423,57 +439,48 @@ All human access goes through Zitadel SSO. All machine access uses OAuth 2.1.
 
 ---
 
-## Service Inventory
+## Service Inventory & Modular Compose Structure
 
-### Currently Running (20 services)
+The platform uses a **modular compose structure** for improved stability and development velocity:
 
-| Service | Purpose | Status | URL |
-|---------|---------|--------|-----|
-| gitlab | Source control | ✅ Running | gitlab.ravenhelm.test |
-| spire-server | Certificate authority | ✅ Running | Internal only |
-| spire-agent | Workload attestation | ✅ Running | Internal only |
-| postgres | Primary database | ✅ Running | postgres:5432 |
-| postgres-spiffe-helper | SVID rotation | ✅ Running | - |
-| redis | Cache & sessions | ✅ Running | redis:6379 |
-| redis-spiffe-helper | SVID rotation | ✅ Running | - |
-| nats | Event bus (hot path) | ✅ Running | nats:4222 |
-| nats-spiffe-helper | SVID rotation | ✅ Running | - |
-| ollama | Local LLM inference | ✅ Running | ollama:11434 |
-| langgraph | Norns agent runtime | ✅ Running | langgraph:2024 |
-| hlidskjalf | Control plane API | ✅ Running | hlidskjalf:8900 |
-| hlidskjalf-ui | Norns Console UI | ✅ Running | norns.ravenhelm.test |
-| zitadel | Identity provider | ✅ Running | zitadel.ravenhelm.test:15443 |
-| grafana | Observability UI | ✅ Running | grafana.ravenhelm.test |
-| prometheus | Metrics collection | ✅ Running | prometheus:9090 |
-| loki | Log aggregation | ✅ Running | loki:3100 |
-| tempo | Distributed tracing | ✅ Running | tempo:3200 |
-| alloy | OTEL collector | ✅ Running | alloy:4317 |
-| alertmanager | Alert routing | ✅ Running | alertmanager:9093 |
+```bash
+# Quick start scripts
+./scripts/start-platform.sh     # Full platform (all stacks)
+./scripts/start-dev.sh           # Minimal dev (infra + security + LangGraph)
+./scripts/start-observability.sh # Add observability to running stack
+```
 
-### Recently Started
+See [`docs/runbooks/RUNBOOK-030-compose-management.md`](docs/runbooks/RUNBOOK-030-compose-management.md) for stack management.
 
-| Service | Purpose | Status | URL |
-|---------|---------|--------|-----|
-| redpanda | Event bus (durable) | ✅ Running | redpanda:9092 |
-| redpanda-console | Redpanda UI | ✅ Running | events.ravenhelm.test |
+### Stack Organization
 
-### Not Running (13 services)
+**Infrastructure** (`compose/docker-compose.infrastructure.yml`)
+- postgres, redis, nats, localstack, openbao
 
-| Service | Purpose | Status | Notes |
-|---------|---------|--------|-------|
-| gitlab-runner | CI/CD executor | ⏳ Pending | After GitLab configured |
-| openbao | Secrets management | ⏳ Pending | Phase 2 |
-| langfuse | LLM observability | ⏳ Pending | Phase 5 |
-| phoenix | LLM debugging | ⏳ Pending | Phase 5 |
-| livekit | Voice/video | ⏳ Pending | Phase 5 |
-| n8n | Workflow automation | ⏳ Pending | Phase 5 |
-| localstack | AWS mocking | ⏳ Pending | Development only |
-| neo4j | Graph database | ⏳ Pending | Optional - Mímir |
-| memgraph | Graph database | ⏳ Pending | Alternative to Neo4j |
-| weaviate | Vector database | ⏳ Pending | RAG pipeline |
-| embeddings | Text embeddings | ⏳ Pending | RAG pipeline |
-| reranker | Search reranking | ⏳ Pending | RAG pipeline |
-| docling | Document parsing | ⏳ Pending | RAG pipeline |
+**Security** (`compose/docker-compose.security.yml`)
+- spire-server, spire-agent, postgres-spiffe-helper, redis-spiffe-helper, nats-spiffe-helper, mcp-gitlab-spiffe-helper, zitadel, oauth2-proxy
+
+**Observability** (`compose/docker-compose.observability.yml`)
+- prometheus, loki, tempo, alloy, grafana, alertmanager, langfuse, phoenix
+
+**Events** (`compose/docker-compose.events.yml`)
+- redpanda, redpanda-console
+
+**AI Infrastructure** (`compose/docker-compose.ai-infra.yml`)
+- ollama, hf-reasoning, hf-agents, weaviate, embeddings, reranker, docling, memgraph, neo4j
+
+**LangGraph & Hlidskjalf** (`compose/docker-compose.langgraph.yml`) - **Isolated**
+- langgraph (Norns agent), hlidskjalf (API), hlidskjalf-ui
+
+**GitLab** (`compose/docker-compose.gitlab.yml`)
+- gitlab, gitlab-runner
+
+**Integrations** (`compose/docker-compose.integrations.yml`)
+- mcp-server-gitlab, n8n, livekit
+
+### Service Status
+
+All 40 services are organized into 8 modular stacks. Start/stop independently as needed.
 
 ---
 

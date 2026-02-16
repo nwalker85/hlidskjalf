@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
+import { useQuery } from "@tanstack/react-query";
 import { 
   Eye, 
   Bird, 
@@ -21,9 +22,15 @@ import {
   Skull,
   ChevronRight,
   Plus,
-  RefreshCw
+  RefreshCw,
+  Settings,
+  Loader2
 } from "lucide-react";
 import { NornsChat } from "@/components/NornsChat";
+import { ObservabilityWidget } from "@/components/observability";
+import { LLMSettingsPanel } from "@/components/llm-settings";
+import { NewProjectWizard } from "@/components/new-project";
+import { api } from "@/lib/api";
 
 // The Nine Realms with their characteristics
 const REALMS = [
@@ -38,23 +45,47 @@ const REALMS = [
   { id: "helheim", name: "Helheim", icon: Skull, color: "text-raven-500", desc: "Archive", status: "cold" },
 ];
 
-// Mock data for demonstration
-const MOCK_PROJECTS = [
-  { id: "saaa", name: "SAAA", realm: "midgard", services: 4, health: "healthy" },
-  { id: "ravenmaskos", name: "Ravenmaskos", realm: "midgard", services: 2, health: "healthy" },
-  { id: "gitlab-sre", name: "GitLab SRE", realm: "vanaheim", services: 12, health: "healthy" },
-];
-
-const MOCK_STATS = {
-  totalProjects: 3,
-  totalServices: 18,
-  portsAllocated: 24,
-  healthyDeployments: 18,
-  unhealthyDeployments: 0,
-};
-
 export default function HlidskjalfDashboard() {
   const [selectedRealm, setSelectedRealm] = useState<string | null>(null);
+  const [showLLMSettings, setShowLLMSettings] = useState(false);
+  const [showNewProject, setShowNewProject] = useState(false);
+
+  // Fetch platform overview stats
+  const { data: stats, isLoading: statsLoading } = useQuery({
+    queryKey: ['platform-overview'],
+    queryFn: () => api.getOverview(),
+    refetchInterval: 10000, // Refresh every 10 seconds
+  });
+
+  // Fetch projects with optional realm filtering
+  const { data: projects, isLoading: projectsLoading } = useQuery({
+    queryKey: ['projects', selectedRealm],
+    queryFn: () => api.listProjects(selectedRealm || undefined),
+    refetchInterval: 15000, // Refresh every 15 seconds
+  });
+
+  // Calculate realm statistics from projects
+  const realmStats = useMemo(() => {
+    if (!projects) return {};
+    
+    const stats: Record<string, { services: number; health: Record<string, number> }> = {};
+    
+    projects.forEach(project => {
+      // Count services per project (from ports)
+      const serviceCount = project.ports.length;
+      
+      // This would ideally come from deployments, but we'll use a simplified approach
+      // In a real implementation, you'd join with deployment data
+      const realm = "midgard"; // Default for now
+      
+      if (!stats[realm]) {
+        stats[realm] = { services: 0, health: {} };
+      }
+      stats[realm].services += serviceCount;
+    });
+    
+    return stats;
+  }, [projects]);
 
   return (
     <div className="min-h-screen">
@@ -96,7 +127,18 @@ export default function HlidskjalfDashboard() {
                 </div>
               </div>
               
-              <button className="btn-primary flex items-center gap-2">
+              <button
+                onClick={() => setShowLLMSettings(true)}
+                className="btn-secondary flex items-center gap-2 whitespace-nowrap"
+                title="Configure LLM providers and models"
+              >
+                <Settings className="w-4 h-4" />
+                LLM Settings
+              </button>
+              <button 
+                onClick={() => setShowNewProject(true)}
+                className="btn-primary flex items-center gap-2"
+              >
                 <Plus className="w-4 h-4" />
                 New Project
               </button>
@@ -115,36 +157,58 @@ export default function HlidskjalfDashboard() {
       <main className="max-w-7xl mx-auto px-6 py-8">
         {/* Stats Overview */}
         <div className="grid grid-cols-5 gap-4 mb-8">
+          {statsLoading ? (
+            <>
+              {[...Array(5)].map((_, i) => (
+                <div key={i} className="stat-card animate-pulse">
+                  <div className="h-4 bg-raven-800 rounded mb-2" />
+                  <div className="h-8 bg-raven-800 rounded" />
+                </div>
+              ))}
+            </>
+          ) : stats ? (
+            <>
           <StatCard 
             label="Projects" 
-            value={MOCK_STATS.totalProjects} 
+                value={stats.total_projects} 
             icon={Server}
             color="text-odin-400"
           />
           <StatCard 
-            label="Services" 
-            value={MOCK_STATS.totalServices} 
+                label="Deployments" 
+                value={stats.total_deployments} 
             icon={Network}
             color="text-huginn-400"
           />
           <StatCard 
             label="Ports Allocated" 
-            value={MOCK_STATS.portsAllocated} 
+                value={stats.ports_allocated} 
             icon={Activity}
             color="text-muninn-400"
           />
           <StatCard 
             label="Healthy" 
-            value={MOCK_STATS.healthyDeployments} 
+                value={stats.healthy_deployments} 
             icon={Shield}
             color="text-healthy"
           />
           <StatCard 
             label="Unhealthy" 
-            value={MOCK_STATS.unhealthyDeployments} 
+                value={stats.unhealthy_deployments} 
             icon={Activity}
             color="text-unhealthy"
           />
+            </>
+          ) : (
+            <div className="col-span-5 text-center text-raven-500 py-8">
+              Failed to load stats
+            </div>
+          )}
+        </div>
+
+        {/* Observability Stream */}
+        <div className="mb-8">
+          <ObservabilityWidget />
         </div>
 
         {/* Nine Realms Grid */}
@@ -212,8 +276,18 @@ export default function HlidskjalfDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {MOCK_PROJECTS.map((project) => {
-                  const realm = REALMS.find(r => r.id === project.realm);
+                {projectsLoading ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center">
+                      <Loader2 className="w-6 h-6 animate-spin mx-auto text-odin-400" />
+                    </td>
+                  </tr>
+                ) : projects && projects.length > 0 ? (
+                  projects.map((project) => {
+                    // Determine realm from project data (simplified)
+                    const realm = REALMS[0]; // Default to Midgard for now
+                    const serviceCount = project.ports.length;
+                    
                   return (
                     <tr key={project.id} className="table-row">
                       <td className="px-4 py-3">
@@ -233,20 +307,30 @@ export default function HlidskjalfDashboard() {
                           <span className="text-sm">{realm?.name}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-raven-300">{project.services}</td>
+                        <td className="px-4 py-3 text-raven-300">{serviceCount}</td>
                       <td className="px-4 py-3">
-                        <span className={`badge-${project.health}`}>
-                          {project.health}
+                          <span className="badge-healthy">
+                            healthy
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <button className="text-sm text-raven-400 hover:text-odin-400">
+                          <Link 
+                            href={`/projects/${project.id}`}
+                            className="text-sm text-raven-400 hover:text-odin-400"
+                          >
                           Manage →
-                        </button>
+                          </Link>
                       </td>
                     </tr>
                   );
-                })}
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-raven-500">
+                      No projects found. Create your first project to get started.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -267,6 +351,22 @@ export default function HlidskjalfDashboard() {
 
       {/* The Norns - AI Chat Assistant */}
       <NornsChat />
+      
+      {/* LLM Settings Panel */}
+      <LLMSettingsPanel
+        isOpen={showLLMSettings}
+        onClose={() => setShowLLMSettings(false)}
+      />
+      
+      {/* New Project Wizard */}
+      <NewProjectWizard
+        isOpen={showNewProject}
+        onClose={() => setShowNewProject(false)}
+        onSuccess={() => {
+          // Refetch projects after successful creation
+          window.location.reload();
+        }}
+      />
     </div>
   );
 }

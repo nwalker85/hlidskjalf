@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Settings, Zap, Wrench, Users, Check, Loader2, X, RefreshCw } from "lucide-react";
+import { useLlmConfigEvents, ProviderInfo } from "@/hooks/useLlmConfigEvents";
 
 interface LLMModelConfig {
   provider: string;
@@ -13,14 +14,6 @@ interface LLMConfiguration {
   reasoning: LLMModelConfig;
   tools: LLMModelConfig;
   subagents: LLMModelConfig;
-}
-
-interface Provider {
-  id: string;
-  name: string;
-  available: boolean;
-  models: string[];
-  default_model: string;
 }
 
 interface LLMConfigModalProps {
@@ -64,7 +57,7 @@ export function LLMConfigModal({
   onConfigChange,
 }: LLMConfigModalProps) {
   const [config, setConfig] = useState<LLMConfiguration>(DEFAULT_CONFIG);
-  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +104,52 @@ export function LLMConfigModal({
       setSuccess(false);
     }
   }, [isOpen, fetchData]);
+
+  const reconcileConfigWithProviders = useCallback(
+    (current: LLMConfiguration, providerList: ProviderInfo[]): LLMConfiguration => {
+      if (!providerList.length) return current;
+      const providerMap = new Map(providerList.map((provider) => [provider.id, provider]));
+      const fallbackProvider = providerList[0];
+
+      const normalizeConfig = (modelConfig: LLMModelConfig): LLMModelConfig => {
+        const provider = providerMap.get(modelConfig.provider) || fallbackProvider;
+        const models = provider.models.length ? provider.models : [provider.default_model];
+        const safeModel = models.includes(modelConfig.model) ? modelConfig.model : models[0];
+        return {
+          provider: provider.id,
+          model: safeModel,
+          temperature: modelConfig.temperature,
+        };
+      };
+
+      return {
+        reasoning: normalizeConfig(current.reasoning),
+        tools: normalizeConfig(current.tools),
+        subagents: normalizeConfig(current.subagents),
+      };
+    },
+    [],
+  );
+
+  useLlmConfigEvents(isOpen, (event) => {
+    if (event.type === "llm.providers.updated") {
+      const updatedProviders = event.providers ?? [];
+      setProviders(updatedProviders);
+      if (updatedProviders.length) {
+        setConfig((prev) => reconcileConfigWithProviders(prev, updatedProviders));
+      }
+      return;
+    }
+
+    if (event.type === "llm.config.changed") {
+      if (sessionId && event.session_id && event.session_id !== sessionId) {
+        return;
+      }
+      if (event.config) {
+        setConfig(event.config);
+      }
+    }
+  });
 
   // Save configuration
   const handleSave = async () => {

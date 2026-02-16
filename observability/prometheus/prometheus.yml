@@ -12,7 +12,8 @@ alerting:
           - alertmanager:9093
 
 rule_files:
-  # - "alerts/*.yml"
+  - "rules/self_heal.rules.yml"
+  - "rules/frontend-alerts.yml"
 
 scrape_configs:
   # Prometheus self-monitoring
@@ -39,6 +40,11 @@ scrape_configs:
   - job_name: 'tempo'
     static_configs:
       - targets: ['tempo:3200']
+
+  # Bifrost Gateway metrics
+  - job_name: 'bifrost-gateway'
+    static_configs:
+      - targets: ['bifrost-gateway:8050']
 
   # LocalStack (if it exposes metrics)
   # - job_name: 'localstack'

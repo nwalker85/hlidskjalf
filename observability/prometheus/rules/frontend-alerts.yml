@@ -1,0 +1,81 @@
+groups:
+  - name: hlidskjalf_frontend
+    interval: 30s
+    rules:
+      # High error rate alert
+      - alert: HighFrontendErrorRate
+        expr: |
+          sum(rate(http_client_duration_milliseconds_count{service_name="hlidskjalf-ui",http_status_code=~"5.."}[5m])) 
+          / 
+          sum(rate(http_client_duration_milliseconds_count{service_name="hlidskjalf-ui"}[5m])) 
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          service: hlidskjalf-ui
+        annotations:
+          summary: "High error rate in Hlidskjalf UI"
+          description: "Frontend error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+          dashboard: "https://grafana.ravenhelm.test/d/hlidskjalf-frontend"
+
+      # Slow API responses
+      - alert: SlowAPIResponses
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(http_client_duration_milliseconds_bucket{service_name="hlidskjalf-ui"}[5m])) by (le, http_url)
+          ) > 2000
+        for: 10m
+        labels:
+          severity: warning
+          component: frontend
+          service: hlidskjalf-ui
+        annotations:
+          summary: "Slow API responses in Hlidskjalf UI"
+          description: "95th percentile response time is {{ $value }}ms for {{ $labels.http_url }} (threshold: 2000ms)"
+          dashboard: "https://grafana.ravenhelm.test/d/hlidskjalf-frontend"
+
+      # Very slow page loads
+      - alert: SlowPageLoad
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(document_load_duration_milliseconds_bucket{service_name="hlidskjalf-ui"}[5m])) by (le)
+          ) > 5000
+        for: 10m
+        labels:
+          severity: warning
+          component: frontend
+          service: hlidskjalf-ui
+        annotations:
+          summary: "Slow page load times in Hlidskjalf UI"
+          description: "95th percentile page load time is {{ $value }}ms (threshold: 5000ms)"
+          dashboard: "https://grafana.ravenhelm.test/d/hlidskjalf-frontend"
+
+      # Frontend down (no requests)
+      - alert: FrontendNoTraffic
+        expr: |
+          sum(rate(http_client_duration_milliseconds_count{service_name="hlidskjalf-ui"}[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: frontend
+          service: hlidskjalf-ui
+        annotations:
+          summary: "Hlidskjalf UI has no traffic"
+          description: "No HTTP requests detected from frontend in the last 5 minutes"
+          dashboard: "https://grafana.ravenhelm.test/d/hlidskjalf-frontend"
+
+      # High client-side error rate (console errors, exceptions)
+      - alert: HighClientErrorRate
+        expr: |
+          sum(rate(exceptions_total{service_name="hlidskjalf-ui"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          service: hlidskjalf-ui
+        annotations:
+          summary: "High client-side error rate in Hlidskjalf UI"
+          description: "Client-side exceptions occurring at {{ $value }} per second"
+          dashboard: "https://grafana.ravenhelm.test/d/hlidskjalf-frontend"
+

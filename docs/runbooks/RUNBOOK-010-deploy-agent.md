@@ -176,7 +176,7 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - gitlab-network
+      - platform_net
     labels:
       - "ravenhelm.agent=my-new-agent"  # For SPIRE registration
 ```

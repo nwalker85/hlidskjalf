@@ -1,0 +1,87 @@
+# Ravenhelm Platform - Events Stack
+# ====================================
+# Kafka-compatible event streaming (Redpanda)
+#
+# Services: redpanda, redpanda-console
+# Dependencies: zitadel (for SSO)
+#
+# Start: docker compose -f compose/docker-compose.events.yml up -d
+
+include:
+  - docker-compose.base.yml
+
+services:
+  # =========================================================================
+  # EVENT PLANE - Redpanda (Kafka-compatible)
+  # =========================================================================
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: gitlab-sre-redpanda
+    labels:
+      - "ravenhelm.project=hlidskjalf-events"
+      - "ravenhelm.service=redpanda"
+      - "ravenhelm.workload=event-bus"
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=warn
+    ports:
+      - "18081:18081"  # Schema Registry
+      - "18082:18082"  # Pandaproxy (REST)
+      - "19092:19092"  # Kafka API
+      - "19644:9644"   # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # EVENT PLANE - Redpanda Console (UI)
+  # =========================================================================
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: gitlab-sre-redpanda-console
+    labels:
+      - "ravenhelm.project=hlidskjalf-events"
+      - "ravenhelm.service=redpanda-console"
+      - "ravenhelm.workload=event-bus"
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    environment:
+      - KAFKA_BROKERS=redpanda:9092
+      - KAFKA_SCHEMAREGISTRY_ENABLED=true
+      - KAFKA_SCHEMAREGISTRY_URLS=http://redpanda:8081
+      - REDPANDA_ADMINAPI_ENABLED=true
+      - REDPANDA_ADMINAPI_URLS=http://redpanda:9644
+      # Zitadel SSO
+      - LOGIN_OIDC_ENABLED=true
+      - LOGIN_OIDC_CLIENTID=${REDPANDA_OIDC_CLIENT_ID}
+      - LOGIN_OIDC_CLIENTSECRET=${REDPANDA_OIDC_CLIENT_SECRET}
+      - LOGIN_OIDC_ISSUERURL=https://zitadel.ravenhelm.test
+      - LOGIN_OIDC_DISPLAYNAME=Zitadel
+    ports:
+      - "8088:8080"  # Changed from 8080 to avoid conflict with Zitadel
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - platform_net
+

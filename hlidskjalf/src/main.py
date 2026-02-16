@@ -44,8 +44,10 @@ from src.core.config import get_settings
 from src.models.registry import Base
 from src.api.routes import router as api_router
 from src.api.llm_config import router as llm_config_router
+from src.api.project_routes import router as project_router
 from src.norns.routes import router as norns_router
 from src.services.deployment_manager import HealthCheckScheduler
+from src.services.llm_model_watcher import LLMModelWatcher
 
 # =============================================================================
 # Configuration
@@ -119,16 +121,48 @@ async def lifespan(app: FastAPI):
     
     logger.info("Database tables created/verified")
     
+    # Sync port_registry.yaml to database
+    try:
+        from src.services.config_loader import ConfigLoader
+        config_loader = ConfigLoader()
+        async with async_session_factory() as session:
+            sync_summary = await config_loader.sync_to_database(session)
+            logger.info(
+                "Configuration synced to database",
+                projects_created=sync_summary["projects_created"],
+                projects_updated=sync_summary["projects_updated"],
+                ports_created=sync_summary["ports_created"],
+                errors=len(sync_summary["errors"])
+            )
+    except Exception as e:
+        logger.warning(f"Port registry sync failed (non-fatal): {e}")
+    
     # Start health check scheduler
     scheduler = HealthCheckScheduler(async_session_factory)
     await scheduler.start()
     
     logger.info("Health check scheduler started")
+
+    # Start Docker discovery background job
+    from src.services.deployment_manager import DockerDiscoveryJob
+    docker_discovery = DockerDiscoveryJob(async_session_factory)
+    await docker_discovery.start()
+    
+    logger.info("Docker discovery job started")
+
+    model_watcher = LLMModelWatcher(
+        poll_interval_seconds=settings.LLM_PROVIDER_REFRESH_SECONDS,
+        kafka_bootstrap=settings.KAFKA_BOOTSTRAP,
+    )
+    await model_watcher.start()
+    logger.info("LLM model watcher started")
     
     yield
     
     # Shutdown
     await scheduler.stop()
+    await docker_discovery.stop()
+    await model_watcher.stop()
     await engine.dispose()
     
     logger.info("Ravenhelm Control Plane shutdown complete")
@@ -189,11 +223,16 @@ Workload identity via SPIRE — only the worthy may enter Valhalla.
 # Middleware
 # =============================================================================
 
-# CORS
+# CORS - Allow all ravenhelm.* domains for multi-environment support
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://hlidskjalf.ravenhelm.test",
+        "https://hlidskjalf.ravenhelm.dev",
+        "https://hlidskjalf.ravenhelm.ai",
         "https://control.ravenhelm.test",
+        "https://control.ravenhelm.dev",
+        "https://control.ravenhelm.ai",
         "https://localhost:3000",
         "http://localhost:3000",
     ],
@@ -244,18 +283,22 @@ if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
 # Routes
 # =============================================================================
 
-# Override the session dependency with actual implementation
-from src.api import routes
-routes.get_session = get_session
-
 # API routes
 app.include_router(api_router, prefix="/api/v1")
+
+# Override the session dependency with actual implementation
+# FastAPI captures dependencies at import time, so we must use dependency_overrides
+from src.api.routes import get_session as routes_get_session
+app.dependency_overrides[routes_get_session] = get_session
 
 # LLM Configuration routes
 app.include_router(llm_config_router, prefix="/api/v1")
 
 # The Norns - AI Agent routes
 app.include_router(norns_router, prefix="/api/v1")
+
+# Project scaffolding routes
+app.include_router(project_router, prefix="/api/v1")
 
 # Prometheus metrics endpoint
 metrics_app = make_asgi_app()

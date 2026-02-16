@@ -1,6 +1,28 @@
 import NextAuth from "next-auth";
 import type { NextAuthConfig } from "next-auth";
 
+// Multi-environment Zitadel issuer detection
+// Supports: .test (dev), .dev (staging), .ai (production)
+function getZitadelIssuer(): string {
+  // Allow explicit override
+  if (process.env.AUTH_ZITADEL_ISSUER) {
+    return process.env.AUTH_ZITADEL_ISSUER;
+  }
+  
+  // Detect from NEXTAUTH_URL if available
+  const nextAuthUrl = process.env.NEXTAUTH_URL;
+  if (nextAuthUrl) {
+    if (nextAuthUrl.includes('.dev')) {
+      return 'https://zitadel.ravenhelm.dev';
+    } else if (nextAuthUrl.includes('.ai')) {
+      return 'https://zitadel.ravenhelm.ai';
+    }
+  }
+  
+  // Default to dev (.test)
+  return 'https://zitadel.ravenhelm.test';
+}
+
 // Zitadel OIDC provider configuration
 const config: NextAuthConfig = {
   providers: [
@@ -8,7 +30,7 @@ const config: NextAuthConfig = {
       id: "zitadel",
       name: "Zitadel",
       type: "oidc",
-      issuer: process.env.AUTH_ZITADEL_ISSUER || "https://zitadel.ravenhelm.test",
+      issuer: getZitadelIssuer(),
       clientId: process.env.AUTH_ZITADEL_CLIENT_ID!,
       clientSecret: process.env.AUTH_ZITADEL_CLIENT_SECRET!,
       authorization: {

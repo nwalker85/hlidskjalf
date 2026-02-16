@@ -1,0 +1,2 @@
+"""MCP GitLab server package."""
+

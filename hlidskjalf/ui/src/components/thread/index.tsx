@@ -45,6 +45,7 @@ import {
   ArtifactTitle,
   useArtifactContext,
 } from "./artifact";
+import { useNornsSession } from "@/providers/NornsSessionProvider";
 
 function StickyToBottomContent(props: {
   content: ReactNode;
@@ -115,7 +116,8 @@ export function Thread() {
   const [artifactContext, setArtifactContext] = useArtifactContext();
   const [artifactOpen, closeArtifact] = useArtifactOpen();
 
-  const [threadId, _setThreadId] = useQueryState("threadId");
+  const { config, updateThreadId } = useNornsSession();
+  const threadId = config?.threadId ?? null;
   const [chatHistoryOpen, setChatHistoryOpen] = useQueryState(
     "chatHistoryOpen",
     parseAsBoolean.withDefault(false),
@@ -145,9 +147,7 @@ export function Thread() {
   const lastError = useRef<string | undefined>(undefined);
 
   const setThreadId = (id: string | null) => {
-    _setThreadId(id);
-
-    // close artifact and reset artifact context
+    updateThreadId(id).catch((err) => console.error("Failed to update thread", err));
     closeArtifact();
     setArtifactContext({});
   };

@@ -1,0 +1,11 @@
+---
+description: Documentation and runbook guidance.
+globs:
+  - "docs/**"
+alwaysApply: false
+---
+- Keep runbooks in `docs/runbooks/` numbered `RUNBOOK-0xx-*.md`. Each runbook must include: overview, prerequisites, numbered steps, validation, and troubleshooting. Reference supporting scripts rather than duplicating them.
+- Update `docs/wiki/Runbook_Catalog.md` whenever a new runbook is added or materially changed.
+- Architecture/design docs belong under `docs/architecture/`. Tie them back to `PROJECT_PLAN.md` phases so the plan stays the executive summary.
+- Process documents (`docs/process/…`) should reflect the live GitLab workflow; when you change labels/boards/milestones, update the process docs in the same MR.
+- Lessons learned go in `docs/LESSONS_LEARNED.md` with a numbered section, “Problem → Solution → Key Insight.”

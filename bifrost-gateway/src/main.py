@@ -5,12 +5,15 @@ The rainbow bridge connecting external services to AI backends.
 Uses extensible adapter and backend patterns for multi-platform support.
 """
 
+from __future__ import annotations
+
 import structlog
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from prometheus_client import make_asgi_app
 
 from src.config import get_settings
 from src.adapters import (
@@ -29,6 +32,14 @@ from src.backends import (
     shutdown_backend,
 )
 from src.backends.registry import list_registered_backends
+from src.gitlab_client import GitLabClient
+from src.secrets import get_secrets_helper
+from src.work_items import (
+    WORK_QUEUE,
+    WorkItem,
+    WorkItemPoller,
+    WorkItemProcessor,
+)
 
 # Configure structured logging
 structlog.configure(
@@ -45,6 +56,11 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+_gitlab_client: GitLabClient | None = None
+_work_item_processor: WorkItemProcessor | None = None
+_work_item_poller: WorkItemPoller | None = None
+_gitlab_webhook_secret: str | None = None
 
 
 async def handle_adapter_message(message: AdapterMessage) -> AdapterResponse:
@@ -97,6 +113,7 @@ async def handle_adapter_message(message: AdapterMessage) -> AdapterResponse:
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     settings = get_settings()
+    global _gitlab_client, _work_item_processor, _work_item_poller, _gitlab_webhook_secret
     logger.info(
         "bifrost_starting",
         app=settings.APP_NAME,
@@ -125,12 +142,61 @@ async def lifespan(app: FastAPI):
         enabled_adapters=list(enabled_adapters.keys()),
     )
     
+    # GitLab → Norns integration (optional if secrets available)
+    secrets_helper = get_secrets_helper(
+        endpoint_url=settings.AWS_ENDPOINT_URL,
+        region_name=settings.AWS_REGION,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    )
+
+    gitlab_token = settings.GITLAB_PAT
+    if not gitlab_token and settings.GITLAB_PAT_SECRET_NAME:
+        secret_payload = secrets_helper.get_secret_json(settings.GITLAB_PAT_SECRET_NAME)
+        gitlab_token = secret_payload.get("token")
+
+    _gitlab_webhook_secret = settings.GITLAB_WEBHOOK_SECRET
+    if not _gitlab_webhook_secret and settings.GITLAB_WEBHOOK_SECRET_NAME:
+        try:
+            _gitlab_webhook_secret = secrets_helper.get_secret(settings.GITLAB_WEBHOOK_SECRET_NAME)
+        except Exception as exc:  # pragma: no cover - logs for ops
+            logger.warning("gitlab_webhook_secret_missing", error=str(exc))
+
+    if gitlab_token:
+        _gitlab_client = GitLabClient(settings.GITLAB_BASE_URL, gitlab_token)
+        _work_item_processor = WorkItemProcessor(_gitlab_client, settings.GITLAB_PROJECT_ID)
+        _work_item_processor.start()
+
+        _work_item_poller = WorkItemPoller(
+            _gitlab_client,
+            settings.GITLAB_PROJECT_ID,
+            interval_seconds=settings.WORKQUEUE_POLL_INTERVAL_SECONDS,
+        )
+        _work_item_poller.start()
+        logger.info("gitlab_workqueue_enabled", project_id=settings.GITLAB_PROJECT_ID)
+    else:
+        logger.warning("gitlab_token_missing", message="Work queue disabled")
+
+    # Initialize tool registry (discovers Norns and MCP tools)
+    try:
+        from src.tools_registry import initialize_registry
+        await initialize_registry()
+        logger.info("tool_registry_initialized")
+    except Exception as e:
+        logger.warning("tool_registry_init_failed", error=str(e))
+
     yield
     
     # Shutdown
     logger.info("bifrost_shutting_down")
     await shutdown_adapters()
     await shutdown_backend()
+    if _work_item_poller:
+        await _work_item_poller.stop()
+    if _work_item_processor:
+        await _work_item_processor.stop()
+    if _gitlab_client:
+        await _gitlab_client.close()
 
 
 # Create FastAPI app
@@ -148,6 +214,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 
 # =============================================================================
@@ -427,6 +496,334 @@ async def direct_chat(request: DirectChatRequest):
         thread_id=response.thread_id,
         backend=backend.name,
     )
+
+
+# =============================================================================
+# GitLab → Norns work queue webhook
+# =============================================================================
+
+@app.post("/api/work-items")
+async def work_item_webhook(request: Request):
+    """Receive GitLab issue hooks and enqueue Norns work items."""
+    if not _gitlab_client or not _work_item_processor:
+        raise HTTPException(status_code=503, detail="Work queue not initialized")
+
+    expected_token = _gitlab_webhook_secret
+    provided_token = request.headers.get("X-Gitlab-Token")
+    if expected_token and provided_token != expected_token:
+        logger.warning("gitlab_webhook_invalid_token")
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    event_name = request.headers.get("X-Gitlab-Event", "")
+    if event_name not in {"Issue Hook", "Confidential Issue Hook"}:
+        return {"status": "ignored", "reason": "unsupported_event"}
+
+    payload = await request.json()
+    issue_attrs = payload.get("object_attributes") or {}
+    issue_id = issue_attrs.get("id")
+    issue_iid = issue_attrs.get("iid")
+
+    if not issue_id or not issue_iid:
+        raise HTTPException(status_code=400, detail="Missing issue identifiers")
+
+    labels: list[str] = []
+    for label in payload.get("labels", []):
+        if isinstance(label, dict) and label.get("title"):
+            labels.append(label["title"])
+        elif isinstance(label, str):
+            labels.append(label)
+
+    if "actor::norns" not in labels or "workflow::ready" not in labels:
+        return {"status": "ignored", "reason": "label_gate"}
+
+    item = WorkItem(
+        project_id=get_settings().GITLAB_PROJECT_ID,
+        issue_id=issue_id,
+        issue_iid=issue_iid,
+        title=issue_attrs.get("title", "Untitled"),
+        description=issue_attrs.get("description") or "",
+        labels=labels,
+        web_url=issue_attrs.get("url") or issue_attrs.get("web_url") or "",
+        updated_at=issue_attrs.get("updated_at") or "",
+        author=(payload.get("user") or {}).get("username"),
+        assigned_to=(issue_attrs.get("assignee") or {}).get("username"),
+        payload=payload,
+        source="webhook",
+    )
+
+    await WORK_QUEUE.enqueue(item)
+    return {"status": "queued", "issue": issue_iid}
+
+
+# =============================================================================
+# TOOL REGISTRY API
+# =============================================================================
+
+from pydantic import BaseModel as PydanticBaseModel
+from typing import Optional, List
+
+
+class ToolResponse(PydanticBaseModel):
+    """Tool definition response."""
+    name: str
+    description: str
+    category: str
+    source: str
+    enabled: bool
+    parameters: list[dict]
+    requires: list[str]
+    tags: list[str]
+    version: str
+    mcp_server: str | None = None
+
+
+class ToolRegistrationRequest(PydanticBaseModel):
+    """Request to register a custom tool."""
+    name: str
+    description: str
+    category: str = "custom"
+    parameters: list[dict] = []
+    requires: list[str] = []
+    tags: list[str] = []
+    endpoint: str | None = None
+
+
+class ToolListResponse(PydanticBaseModel):
+    """Response for tool list."""
+    tools: list[dict]
+    total: int
+    categories: dict[str, int]
+
+
+@app.get("/api/tools", response_model=ToolListResponse)
+async def list_all_tools(
+    category: str | None = None,
+    source: str | None = None,
+    enabled_only: bool = False,
+    tag: str | None = None,
+):
+    """
+    List all registered tools with optional filters.
+    
+    Query Parameters:
+        category: Filter by category (platform, memory, skills, etc.)
+        source: Filter by source (norns, bifrost, mcp, custom)
+        enabled_only: Only return enabled tools
+        tag: Filter by tag
+    """
+    from src.tools_registry import get_tool_registry, ToolCategory, ToolSource
+    
+    registry = get_tool_registry()
+    
+    # Convert string filters to enums
+    cat_filter = ToolCategory(category) if category else None
+    src_filter = ToolSource(source) if source else None
+    
+    tools = registry.list_tools(
+        category=cat_filter,
+        source=src_filter,
+        enabled_only=enabled_only,
+        tag=tag,
+    )
+    
+    return ToolListResponse(
+        tools=[t.to_dict() for t in tools],
+        total=len(tools),
+        categories=registry.get_categories(),
+    )
+
+
+@app.get("/api/tools/{tool_name}")
+async def get_tool(tool_name: str):
+    """Get detailed information about a specific tool."""
+    from src.tools_registry import get_tool_registry
+    
+    registry = get_tool_registry()
+    tool = registry.get_tool(tool_name)
+    
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    
+    return tool.to_dict()
+
+
+@app.post("/api/tools/{tool_name}/enable")
+async def enable_tool(tool_name: str):
+    """Enable a tool for Norns to use."""
+    from src.tools_registry import get_tool_registry
+    
+    registry = get_tool_registry()
+    success = await registry.enable_tool(tool_name)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    
+    return {"ok": True, "tool": tool_name, "enabled": True}
+
+
+@app.post("/api/tools/{tool_name}/disable")
+async def disable_tool(tool_name: str):
+    """Disable a tool."""
+    from src.tools_registry import get_tool_registry
+    
+    registry = get_tool_registry()
+    success = await registry.disable_tool(tool_name)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    
+    return {"ok": True, "tool": tool_name, "enabled": False}
+
+
+@app.post("/api/tools/register")
+async def register_custom_tool(request: ToolRegistrationRequest):
+    """
+    Manually register a custom tool.
+    
+    Custom tools can be external APIs or user-defined operations.
+    """
+    from src.tools_registry import (
+        get_tool_registry,
+        ToolDefinition,
+        ToolCategory,
+        ToolSource,
+        ToolParameter,
+    )
+    
+    registry = get_tool_registry()
+    
+    # Check if already exists
+    existing = registry.get_tool(request.name)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tool '{request.name}' already exists. Use DELETE first to replace."
+        )
+    
+    # Convert parameters
+    params = [
+        ToolParameter(
+            name=p.get("name", ""),
+            type=p.get("type", "string"),
+            description=p.get("description", ""),
+            required=p.get("required", True),
+            default=p.get("default"),
+        )
+        for p in request.parameters
+    ]
+    
+    # Create tool
+    tool = ToolDefinition(
+        name=request.name,
+        description=request.description,
+        category=ToolCategory(request.category),
+        source=ToolSource.CUSTOM,
+        enabled=True,
+        parameters=params,
+        requires=request.requires,
+        tags=request.tags,
+        endpoint=request.endpoint,
+    )
+    
+    registry.register_tool(tool)
+    
+    return {"ok": True, "tool": tool.to_dict()}
+
+
+@app.delete("/api/tools/{tool_name}")
+async def delete_tool(tool_name: str):
+    """
+    Remove a custom tool registration.
+    
+    Only custom tools can be deleted. Built-in Norns and MCP tools cannot be removed.
+    """
+    from src.tools_registry import get_tool_registry, ToolSource
+    
+    registry = get_tool_registry()
+    tool = registry.get_tool(tool_name)
+    
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
+    
+    if tool.source != ToolSource.CUSTOM:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot delete {tool.source.value} tool. Use disable instead."
+        )
+    
+    registry.unregister_tool(tool_name)
+    
+    return {"ok": True, "deleted": tool_name}
+
+
+@app.post("/api/tools/discover")
+async def discover_tools(source: str | None = None):
+    """
+    Trigger tool discovery from sources.
+    
+    Args:
+        source: Specific source to discover from ("norns" or "mcp")
+                If not specified, discovers from all sources.
+    """
+    from src.tools_registry import get_tool_registry
+    
+    registry = get_tool_registry()
+    
+    discovered = {
+        "norns": 0,
+        "mcp": 0,
+    }
+    
+    if source is None or source == "norns":
+        discovered["norns"] = await registry.discover_norns_tools()
+    
+    if source is None or source == "mcp":
+        discovered["mcp"] = await registry.discover_mcp_tools()
+    
+    return {
+        "ok": True,
+        "discovered": discovered,
+        "total_tools": len(registry._tools),
+    }
+
+
+@app.post("/api/tools/mcp-servers")
+async def add_mcp_server(name: str, url: str):
+    """Register an MCP server for tool discovery."""
+    from src.tools_registry import get_tool_registry
+    
+    registry = get_tool_registry()
+    registry.add_mcp_server(name, url)
+    
+    # Trigger discovery for new server
+    count = await registry.discover_mcp_tools(server_name=name)
+    
+    return {
+        "ok": True,
+        "server": name,
+        "url": url,
+        "tools_discovered": count,
+    }
+
+
+@app.get("/api/tools/categories")
+async def get_categories():
+    """Get list of tool categories with counts."""
+    from src.tools_registry import get_tool_registry, ToolCategory
+    
+    registry = get_tool_registry()
+    counts = registry.get_categories()
+    
+    return {
+        "categories": [
+            {
+                "id": cat.value,
+                "name": cat.name.replace("_", " ").title(),
+                "count": counts.get(cat.value, 0),
+            }
+            for cat in ToolCategory
+        ],
+    }
 
 
 # =============================================================================

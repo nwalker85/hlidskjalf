@@ -15,6 +15,8 @@ COPY . .
 
 # Build
 ENV NEXT_TELEMETRY_DISABLED=1
+    # Provide dummy secret for build-time (actual secret set at runtime)
+    ENV NEXTAUTH_SECRET=build-time-secret-will-be-overridden
 RUN npm run build
 
 # Production image
@@ -25,16 +27,16 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 odin
+# Create ravenhelm user (UID/GID 1001 per workspace standards)
+RUN addgroup --system --gid 1001 ravenhelm && \
+    adduser --system --uid 1001 -G ravenhelm ravenhelm
 
 # Copy built application
 COPY --from=builder /app/public ./public
-COPY --from=builder --chown=odin:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=odin:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=ravenhelm:ravenhelm /app/.next/standalone ./
+COPY --from=builder --chown=ravenhelm:ravenhelm /app/.next/static ./.next/static
 
-USER odin
+USER ravenhelm
 
 EXPOSE 3900
 

@@ -183,7 +183,7 @@ Run these before adding a new domain or when troubleshooting conflicts—if a sc
 
 ### Subnet Guidance
 
-Port ranges already partition the cognitive fabric logically. Subnets become useful when the stack leaves a single Docker host (Tailnet peers, VLANs, or multi-node Kubernetes). Map each range onto a /28 or /24 slice (e.g., `10.88.0.0/24` for platform, `10.88.10.0/24` for personal, `10.88.20.0/24` for work) whenever you need deterministic routing or firewall policy. For pure local development the default docker bridge is fine—treat subnetting as a hardening/scale lever, not a prerequisite.
+Port ranges already partition the cognitive fabric logically. Subnets become useful when the stack leaves a single Docker host (Tailnet peers, VLANs, or multi-node Kubernetes). Map each range onto a /28 or /24 slice (e.g., `10.10.0.0/24` for platform, `10.10.10.0/24` for personal, `10.10.20.0/24` for work) whenever you need deterministic routing or firewall policy. For pure local development the default docker bridge is fine—treat subnetting as a hardening/scale lever, not a prerequisite.
 
 ---
 

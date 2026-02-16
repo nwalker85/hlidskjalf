@@ -12,7 +12,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   gitlab:
     image: gitlab/gitlab-ce:latest
@@ -61,7 +61,7 @@ services:
       start_period: 300s  # GitLab takes a while to start
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   gitlab-runner:
     image: gitlab/gitlab-runner:latest
@@ -74,7 +74,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LOCALSTACK - AWS Services Emulation
@@ -101,7 +101,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
 
   # =========================================================================
@@ -119,7 +119,7 @@ services:
       - "8889:8889"   # Prometheus exporter metrics
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Prometheus (Metrics)
@@ -140,7 +140,7 @@ services:
       - "9090:9090"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Loki (Logs)
@@ -156,7 +156,7 @@ services:
       - "3100:3100"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Tempo (Traces)
@@ -174,7 +174,7 @@ services:
       - "9095:9095"   # Tempo gRPC
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Grafana (Dashboards)
@@ -199,7 +199,7 @@ services:
       - tempo
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - Alertmanager
@@ -217,7 +217,7 @@ services:
       - "9093:9093"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # OBSERVABILITY - nginx for observe.ravenhelm.test
@@ -235,7 +235,7 @@ services:
       - prometheus
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - Redpanda (Kafka-compatible)
@@ -272,7 +272,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - Redpanda Console (UI)
@@ -293,7 +293,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EVENT PLANE - nginx for events.ravenhelm.test
@@ -310,7 +310,7 @@ services:
       - redpanda-console
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ZERO TRUST - SPIRE Server (Workload Identity)
@@ -333,7 +333,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ZERO TRUST - SPIRE Agent (Workload Attestation)
@@ -359,7 +359,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # HLIÐSKJÁLF - Odin's High Seat (Control Plane)
@@ -403,7 +403,7 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   hlidskjalf-ui:
     build:
@@ -422,7 +422,7 @@ services:
       - hlidskjalf
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SHARED DATABASE - PostgreSQL + pgvector (Muninn's canonical truth)
@@ -446,7 +446,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # HUGINN'S WIND - NATS JetStream (fast, low-latency state transport)
@@ -471,7 +471,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SHARED CACHE - Redis for platform services
@@ -491,7 +491,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LLM OBSERVABILITY - LangFuse (LangGraph/LangChain tracing)
@@ -514,7 +514,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # LLM OBSERVABILITY - Phoenix (Arize) for embeddings & RAG debugging
@@ -530,7 +530,7 @@ services:
       - "6006:6006"
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SECRETS - OpenBao (Vault fork)
@@ -563,7 +563,7 @@ services:
       start_period: 10s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # SECRETS - nginx for vault.ravenhelm.test
@@ -580,7 +580,7 @@ services:
       - openbao
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # AUTOMATION - n8n (Workflow Automation)
@@ -611,7 +611,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -654,7 +654,7 @@ services:
       retries: 5
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # EMBEDDINGS - Sentence Transformers via HuggingFace TEI
@@ -680,7 +680,7 @@ services:
       start_period: 120s  # Model download can take time
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # RERANKER - Cross-Encoder for result reranking
@@ -705,7 +705,7 @@ services:
       start_period: 120s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # DOCLING - Document Processing (IBM Research)
@@ -728,7 +728,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # ╔═══════════════════════════════════════════════════════════════════════╗
@@ -760,7 +760,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
   # =========================================================================
   # GRAPH DB - Neo4j (Enterprise-grade, APOC/GDS plugins)
@@ -789,7 +789,7 @@ services:
       start_period: 60s
     restart: unless-stopped
     networks:
-      - gitlab-network
+      - platform_net
 
 volumes:
   gitlab_config:
@@ -823,9 +823,6 @@ volumes:
   neo4j_plugins:
 
 networks:
-  gitlab-network:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 10.88.0.0/16
+  platform_net:
+    external: true
+    name: platform_net

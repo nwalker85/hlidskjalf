@@ -1,0 +1,14 @@
+roles:
+  admin:
+    gitlab_access_level: 50  # Owner
+  developer:
+    gitlab_access_level: 30  # Developer
+  operator:
+    gitlab_access_level: 20  # Reporter
+  viewer:
+    gitlab_access_level: 10  # Guest
+
+service_accounts:
+  skuld:
+    gitlab_access_level: 50
+

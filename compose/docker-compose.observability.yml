@@ -1,0 +1,243 @@
+# Ravenhelm Platform - Observability Stack
+# ==========================================
+# Metrics, logs, traces, and LLM observability
+#
+# Services: prometheus, loki, tempo, alloy, grafana, alertmanager, langfuse, phoenix
+# Dependencies: postgres (for langfuse), zitadel (for SSO)
+#
+# Start: docker compose -f compose/docker-compose.observability.yml up -d
+
+include:
+  - docker-compose.base.yml
+
+services:
+  # =========================================================================
+  # OBSERVABILITY - Prometheus (Metrics)
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gitlab-sre-prometheus
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=prometheus"
+      - "ravenhelm.workload=metrics"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # OBSERVABILITY - Loki (Logs)
+  # =========================================================================
+  loki:
+    image: grafana/loki:latest
+    container_name: gitlab-sre-loki
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=loki"
+      - "ravenhelm.workload=logs"
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ../observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # OBSERVABILITY - Tempo (Traces)
+  # =========================================================================
+  tempo:
+    image: grafana/tempo:latest
+    container_name: gitlab-sre-tempo
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=tempo"
+      - "ravenhelm.workload=traces"
+    user: "0"  # Run as root to avoid permission issues
+    command: ["-config.file=/etc/tempo/tempo-config.yaml"]
+    volumes:
+      - ../observability/tempo/tempo-config.yaml:/etc/tempo/tempo-config.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo API
+      - "9095:9095"   # Tempo gRPC
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # OBSERVABILITY - Alloy (Unified Log/Metric/Trace Collector)
+  # =========================================================================
+  alloy:
+    image: grafana/alloy:latest
+    container_name: gitlab-sre-alloy
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=alloy"
+      - "ravenhelm.workload=collector"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ../observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy_data:/var/lib/alloy/data
+    ports:
+      - "12345:12345"  # Alloy UI
+      - "4317:4317"    # OTLP gRPC (traces)
+      - "4318:4318"    # OTLP HTTP (traces)
+      - "4319:4319"    # OTLP gRPC (logs)
+    depends_on:
+      - loki
+      - tempo
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # OBSERVABILITY - Grafana (Dashboards)
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gitlab-sre-grafana
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=grafana"
+      - "ravenhelm.workload=dashboards"
+    extra_hosts:
+      - "zitadel.ravenhelm.dev:host-gateway"
+      - "zitadel.ravenhelm.test:host-gateway"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=ravenhelm
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=https://grafana.observe.ravenhelm.test
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor tempoSearch tempoBackendSearch
+      # Zitadel SSO with role-based access
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+      - GF_AUTH_GENERIC_OAUTH_NAME=Zitadel
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID=${GRAFANA_OIDC_CLIENT_ID}
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${GRAFANA_OIDC_CLIENT_SECRET}
+      # Include role scope for Zitadel project roles
+      - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email urn:zitadel:iam:org:project:roles
+      # Updated to use .dev (staging) Zitadel instance
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://zitadel.ravenhelm.dev/oauth/v2/authorize
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://zitadel.ravenhelm.dev/oauth/v2/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://zitadel.ravenhelm.dev/oidc/v1/userinfo
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP=true
+      # Role mapping from Zitadel project roles
+      # Zitadel returns roles as: {"urn:zitadel:iam:org:project:roles": {"admin": {"349394492048015386": "Ravenhelm Platform"}}}
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'admin') && 'Admin' || contains(keys("urn:zitadel:iam:org:project:roles"||`{}`), 'operator') && 'Editor' || 'Viewer'
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=false
+      # Auto-create Ravenhelm org
+      - GF_USERS_AUTO_ASSIGN_ORG=true
+      - GF_USERS_AUTO_ASSIGN_ORG_ID=1
+      - GF_AUTH_GENERIC_OAUTH_ORG_ATTRIBUTE_PATH=
+      - GF_AUTH_GENERIC_OAUTH_ORG_MAPPING=
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # OBSERVABILITY - Alertmanager
+  # =========================================================================
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: gitlab-sre-alertmanager
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=alertmanager"
+      - "ravenhelm.workload=alerts"
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ../observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # LLM OBSERVABILITY - LangFuse (LangGraph/LangChain tracing)
+  # =========================================================================
+  langfuse:
+    image: langfuse/langfuse:2  # v3 requires ClickHouse
+    container_name: gitlab-sre-langfuse
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=langfuse"
+      - "ravenhelm.workload=llm-observability"
+    extra_hosts:
+      - "zitadel.ravenhelm.test:host-gateway"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/langfuse
+      - NEXTAUTH_SECRET=ravenhelm-langfuse-secret-change-in-prod
+      - NEXTAUTH_URL=https://langfuse.observe.ravenhelm.test
+      - SALT=ravenhelm-salt-change-in-prod
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - TELEMETRY_ENABLED=false
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=true
+      # Zitadel SSO
+      - AUTH_CUSTOM_CLIENT_ID=${LANGFUSE_OIDC_CLIENT_ID}
+      - AUTH_CUSTOM_CLIENT_SECRET=${LANGFUSE_OIDC_CLIENT_SECRET}
+      - AUTH_CUSTOM_ISSUER=https://zitadel.ravenhelm.test
+      - AUTH_CUSTOM_NAME=Zitadel
+      - AUTH_DISABLE_USERNAME_PASSWORD=false
+      # Trust self-signed certs in dev (required for Zitadel SSO)
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    networks:
+      - platform_net
+
+  # =========================================================================
+  # LLM OBSERVABILITY - Phoenix (Arize) for embeddings & RAG debugging
+  # =========================================================================
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: gitlab-sre-phoenix
+    labels:
+      - "ravenhelm.project=hlidskjalf-observability"
+      - "ravenhelm.service=phoenix"
+      - "ravenhelm.workload=llm-observability"
+    environment:
+      - PHOENIX_WORKING_DIR=/data
+    volumes:
+      - phoenix_data:/data
+    ports:
+      - "6006:6006"
+    restart: unless-stopped
+    networks:
+      - platform_net
+
